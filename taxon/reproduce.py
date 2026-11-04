@@ -1,4 +1,8 @@
-"""Rebuild every result from the pinned sources. Run through `make reproduce`."""
+"""Rebuild every result from the pinned sources. Run through `make reproduce`.
+
+This never spends money or reads API keys: labeling results are recomputed from what is already
+on disk, and are skipped if nothing has been labeled yet.
+"""
 
 from __future__ import annotations
 
@@ -9,25 +13,44 @@ from pathlib import Path
 
 from tokenizers import Tokenizer
 
-from taxon.baseline import run_baseline
+from eval.metrics import evaluate
+from taxon.baseline import TfidfLogisticRegression, run_baseline
 from taxon.fetch import cached_range, fetch
+from taxon.gold.pool import (
+    FIRST_TARGET,
+    GOLD_POOL_SIZE,
+    assert_disjoint,
+    gold_queue,
+    training_products,
+)
+from taxon.gold.server import LABELS_PATH
+from taxon.gold.store import GoldStore
+from taxon.labeling.report import agreement_report
+from taxon.labeling.retrieval import CandidateRetriever, build_shortlists, recall_at
 from taxon.pins import (
     AMAZON_FILE_SIZES,
     AMAZON_REVISION,
+    DATA_DIR,
     DERIVED_DIR,
+    MODEL,
     RAW_DIR,
     RESULTS_DIR,
     SEED,
     TAXONOMY,
-    TOKENIZERS,
+    TOKENIZER,
     amazon_url,
 )
-from taxon.products import read_candidates, select, summarize, write_jsonl
+from taxon.products import read_candidates, read_jsonl, select, summarize, write_jsonl
 from taxon.silver import coverage, label_products
 from taxon.taxonomy import Taxonomy
 from taxon.trie import TokenTrie
 
 N_PRODUCTS = 10_000
+SUGGESTIONS = 5
+RECALL_CUTOFFS = (10, 30, 50)
+LABELING_ROWS = DATA_DIR / "labeling" / "labels.jsonl"
+GOLD_POOL_ROWS = DATA_DIR / "labeling" / "gold_pool_labels.jsonl"
+TRAINING_LABELS = DATA_DIR / "labeling" / "training_labels.jsonl"
 
 
 def write_result(name: str, payload: dict, results_dir: Path = RESULTS_DIR) -> None:
@@ -68,14 +91,94 @@ def sample_products() -> list[dict]:
     return select(candidates, N_PRODUCTS, SEED)
 
 
+def build_gold_suggestions(
+    products: list[dict], queue: list[str], labels: dict[str, str | None], c: float
+) -> list[dict]:
+    """The baseline's top guesses for each gold product, from provisional labels alone."""
+    training = [p for p in training_products(products, queue) if labels.get(p["parent_asin"])]
+    model = TfidfLogisticRegression(c=c).fit(training, [labels[p["parent_asin"]] for p in training])
+    pool = set(queue)
+    gold = [p for p in products if p["parent_asin"] in pool]
+    return [
+        {"parent_asin": p["parent_asin"], "suggestions": row}
+        for p, row in zip(gold, model.top_k(gold, SUGGESTIONS), strict=True)
+    ]
+
+
+def retrieval_report(
+    products: list[dict],
+    taxonomy: Taxonomy,
+    labels: dict[str, str | None],
+    queue: list[str],
+    shortlists: dict[str, list[str]],
+) -> dict:
+    """Recall against provisional labels, for products outside the gold pool.
+
+    The classifier in the shortlist learned from these same labels and knows only their classes,
+    so this flatters it. Recall on the hand-labeled gold set is the honest figure.
+    """
+    rows = [p for p in training_products(products, queue) if labels.get(p["parent_asin"])]
+    golds = [labels[p["parent_asin"]] for p in rows]
+    similarity = CandidateRetriever(taxonomy.paths()).top_k(rows, max(RECALL_CUTOFFS))
+    fused = [shortlists[p["parent_asin"]] for p in rows]
+    return {
+        "label_source": "silver",
+        "similarity_only": recall_at(similarity, golds, RECALL_CUTOFFS),
+        "shortlist": recall_at(fused, golds, RECALL_CUTOFFS),
+    }
+
+
+def gold_report(
+    products: list[dict],
+    taxonomy: Taxonomy,
+    queue: list[str],
+    labels: dict[str, str | None],
+    shortlists: dict[str, list[str]],
+    c: float,
+    labels_path: Path = LABELS_PATH,
+    rows_path: Path = GOLD_POOL_ROWS,
+    training_labels_path: Path = TRAINING_LABELS,
+) -> dict | None:
+    """Everything measured against hand labels, or None until some exist."""
+    gold = GoldStore(labels_path, queue, taxonomy).labels()
+    if not gold:
+        return None
+    by_asin = {p["parent_asin"]: p for p in products}
+    asins = sorted(gold)
+    golds = [gold[a]["path"] for a in asins]
+    training = [p for p in training_products(products, queue) if labels.get(p["parent_asin"])]
+    model = TfidfLogisticRegression(c=c).fit(training, [labels[p["parent_asin"]] for p in training])
+    predictions = model.predict([by_asin[a] for a in asins])
+    report = {
+        "labeled": len(asins),
+        "baseline_trained_on_silver": evaluate(golds, predictions, valid_paths=taxonomy.paths()),
+        "shortlist_recall": recall_at([shortlists[a] for a in asins], golds, RECALL_CUTOFFS),
+    }
+    if training_labels_path.exists():
+        pipeline = {row["parent_asin"]: row["path"] for row in read_jsonl(training_labels_path)}
+        assert_disjoint(pipeline, queue)
+        rows = [by_asin[a] for a in pipeline]
+        better = TfidfLogisticRegression(c=c).fit(rows, [pipeline[p["parent_asin"]] for p in rows])
+        report["baseline_trained_on_pipeline_labels"] = evaluate(
+            golds, better.predict([by_asin[a] for a in asins]), valid_paths=taxonomy.paths()
+        )
+    if rows_path.exists():
+        rows = {row["parent_asin"]: row for row in read_jsonl(rows_path)}
+        checked = [a for a in asins if a in rows and rows[a]["path"]]
+        if checked:
+            report["pipeline_labels"] = evaluate(
+                [gold[a]["path"] for a in checked], [rows[a]["path"] for a in checked]
+            )
+    return report
+
+
 def main() -> None:
     taxonomy = Taxonomy.load(fetch(TAXONOMY))
     write_result("taxonomy", taxonomy_summary(taxonomy))
 
-    for name, pin in TOKENIZERS.items():
-        tokenizer = Tokenizer.from_file(str(fetch(pin)))
-        stats = build_trie(taxonomy, tokenizer).stats()
-        write_result(f"trie_{name}", {"tokenizer_sha256": pin.sha256, **stats})
+    tokenizer = Tokenizer.from_file(str(fetch(TOKENIZER)))
+    stats = build_trie(taxonomy, tokenizer).stats()
+    write_result("trie", {"model": MODEL, "tokenizer_sha256": TOKENIZER.sha256, **stats})
 
     products = sample_products()
     products_path = DERIVED_DIR / "products.jsonl"
@@ -83,12 +186,47 @@ def main() -> None:
     digest = hashlib.sha256(products_path.read_bytes()).hexdigest()
     write_result("sample", {"seed": SEED, "sha256": digest, **summarize(products)})
 
-    labels = label_products(products, taxonomy)
-    write_jsonl(DERIVED_DIR / "silver_labels.jsonl", labels)
-    write_result("silver", coverage(products, labels))
+    queue = gold_queue(products, SEED)
+    write_jsonl(DERIVED_DIR / "gold_queue.jsonl", [{"parent_asin": a} for a in queue])
+    domains = {p["parent_asin"]: p["domain"] for p in products}
+    write_result(
+        "gold_pool",
+        {
+            "pool": GOLD_POOL_SIZE,
+            "first_target": FIRST_TARGET,
+            "first_target_domains": len({domains[a] for a in queue[:FIRST_TARGET]}),
+        },
+    )
 
-    by_asin = {row["parent_asin"]: row["path"] for row in labels}
-    write_result("baseline", run_baseline(products, by_asin, taxonomy, SEED, "silver"))
+    silver_rows = label_products(products, taxonomy)
+    write_jsonl(DERIVED_DIR / "silver_labels.jsonl", silver_rows)
+    write_result("silver", coverage(products, silver_rows))
+    labels = {row["parent_asin"]: row["path"] for row in silver_rows}
+
+    baseline = run_baseline(products, labels, taxonomy, SEED, "silver", held_out=set(queue))
+    write_result("baseline", baseline)
+    c = baseline["best_c"]
+
+    shortlists = build_shortlists(products, taxonomy, labels, set(queue), SEED, c)
+    write_jsonl(
+        DERIVED_DIR / "shortlists.jsonl",
+        [{"parent_asin": a, "shortlist": row} for a, row in sorted(shortlists.items())],
+    )
+    write_result("retrieval", retrieval_report(products, taxonomy, labels, queue, shortlists))
+    write_jsonl(
+        DERIVED_DIR / "gold_suggestions.jsonl",
+        build_gold_suggestions(products, queue, labels, c),
+    )
+
+    report = gold_report(products, taxonomy, queue, labels, shortlists, c)
+    if report is None:
+        print("No hand labels yet, so gold evaluation is skipped.", flush=True)
+    else:
+        write_result("gold_eval", report)
+    if LABELING_ROWS.exists():
+        write_result("labeling", agreement_report(read_jsonl(LABELING_ROWS)))
+    else:
+        print("Nothing has been labeled yet, so agreement rates are skipped.", flush=True)
 
 
 if __name__ == "__main__":

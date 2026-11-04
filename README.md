@@ -9,7 +9,9 @@ raw one.
 
 ## Status
 
-Milestone 1 of 6 is complete: taxonomy loader, token trie, product sample, baseline, and metrics.
+Milestone 1 is complete. Milestone 2's code is built and tested against fake vendors. The labeling
+run, the gold set and the benchmark tasks are still to come, so nothing below measures real
+annotator labels.
 
 ## Running it
 
@@ -22,7 +24,57 @@ make reproduce
 ```
 
 `make test` runs offline. `make reproduce` downloads about 115 MB, rebuilds every number below
-into `results/`, and takes a few minutes on a CPU.
+into `results/`, and takes a few minutes on a CPU. It never calls a paid API and never reads a key.
+
+## Labeling
+
+Copy `.env.example` to `.env` and fill in the keys. Each annotator picks from a shortlist of up to
+50 paths or says none, and only a none starts a walk down the tree. A frontier model settles
+disagreements or abstains. Every response is cached on disk, and hard caps per vendor stop the run
+before they are passed.
+
+| Role | Model |
+| --- | --- |
+| Annotators | `claude-haiku-5-5`, `gpt-6-luna`, `gemini-3.5-flash-lite` |
+| Arbitrator | `claude-opus-5-5` |
+
+```bash
+make label-fake
+make label-dry-run
+make label-first
+make label-rest
+make label-gold-pool
+```
+
+`make label-fake` runs the flow against in-memory vendors, with no keys and no spending. The others
+spend money. The dry run prints a cost estimate per vendor from 100 products, and later stages
+refuse to start without it. The gold-pool stage exists only to score the pipeline against hand
+labels, and its output never reaches training.
+
+## Gold set
+
+```bash
+make gold
+make gold TARGET=500
+```
+
+This opens a local labeling page with keyboard shortcuts, a search box over every category path, and
+the baseline's top 5 suggestions. It cannot see annotator or arbitrator output. Labels are kept in
+`data/gold/`, which `make clean` leaves alone.
+
+The pool of 500 products is set aside before any training and never overlaps it. The first
+200 are balanced across all 28 domains.
+
+## Benchmark tasks
+
+```bash
+make tasks-draft
+make tasks-review
+make tasks-check
+```
+
+Tasks are drafted from hand labels and listing prices only. Each request is written by hand, in a
+shopper's words, and each task is hand-checked.
 
 ## Results
 
@@ -33,19 +85,31 @@ Shopify taxonomy release 2026-10: 64,292 categories, of which 50,427 are leaves,
 
 ### Token trie
 
-Every category path, internal nodes included, as token sequences. A walk through the trie accepts
-exactly the taxonomy, and each path decodes back to its original text. Qwen3.5-2B and Qwen3.5-4B
-share one vocabulary, as do Qwen2.5-VL and Qwen3-VL.
+Every category path, internal nodes included, as token sequences for Qwen/Qwen3.5-2B. A walk through the
+trie accepts exactly the taxonomy, and each path decodes back to its original text. Qwen3.5-4B shares
+this vocabulary.
 
-| Tokenizer | States | Mean tokens per path | Longest path | Widest branch |
-| --- | --- | --- | --- | --- |
-| Qwen3.5 | 272,297 | 25.1 | 67 | 68 |
-| Qwen2.5-VL | 274,434 | 25.2 | 67 | 68 |
+| States | Mean tokens per path | Longest path | Widest branch |
+| --- | --- | --- | --- |
+| 272,297 | 25.1 | 67 | 68 |
 
 ### Product sample
 
 10,000 products from Amazon Reviews 2023 item metadata, split evenly across 28 domains, with
 duplicates removed by id and by normalized title. Each has a title and an image.
+
+### Shortlists
+
+Share of 4,874 products whose provisional label is in the list. Close means an ancestor or
+descendant of the label is in it.
+
+| Method | Exact, top 30 | Exact, top 50 | Close, top 50 |
+| --- | --- | --- | --- |
+| TF-IDF similarity alone | 35.2% | 40.0% | 75.5% |
+| Similarity, classifier and ancestors | 89.3% | 91.8% | 98.2% |
+
+**The second row is flattering.** Its classifier learned from the same provisional labels it is scored
+against, and knows only their categories. Recall on the gold set will be the real figure.
 
 ### Baseline
 
@@ -53,28 +117,28 @@ TF-IDF plus one-vs-rest logistic regression on title, features, description, and
 
 **These are provisional numbers against silver labels, not a measure of real accuracy.** Labels
 come from matching Amazon's own category breadcrumbs onto the taxonomy, so scores show agreement
-with that mapping. They are replaced by annotator and hand-labeled gold evaluation in milestone 2.
+with that mapping. They will be replaced by evaluation on the hand-labeled gold set.
 
 Silver labels cover 5,126 of 10,000 products (51.3%) and 1,046 distinct paths. They
 cover nothing in All_Beauty, Amazon_Fashion, CDs_and_Vinyl, Health_and_Personal_Care.
 
-Test set of 544 products, regularization chosen on a separate validation split:
+Test set of 523 products, regularization chosen on a separate validation split:
 
 | Model | Exact leaf accuracy |
 | --- | --- |
-| TF-IDF + logistic regression | 48.3% |
-| Always predict the most common label | 4.4% |
+| TF-IDF + logistic regression | 48.9% |
+| Always predict the most common label | 4.6% |
 
-11.8% of test labels never appear in training, so a flat classifier cannot predict them.
+11.9% of test labels never appear in training, so a flat classifier cannot predict them.
 
 | Level | Gold support | Micro precision | Micro recall | Macro precision | Macro recall |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 544 | 75.0% | 75.0% | 72.3% | 59.9% |
-| 2 | 495 | 72.0% | 65.9% | 47.2% | 35.8% |
-| 3 | 367 | 67.1% | 45.0% | 30.6% | 26.3% |
-| 4 | 251 | 63.6% | 32.7% | 23.8% | 20.4% |
-| 5 | 144 | 69.1% | 26.4% | 19.7% | 18.1% |
-| 6 | 48 | 73.9% | 35.4% | 29.7% | 28.2% |
+| 1 | 523 | 75.7% | 75.7% | 72.5% | 60.5% |
+| 2 | 477 | 72.0% | 67.5% | 46.6% | 36.8% |
+| 3 | 352 | 66.1% | 46.0% | 30.4% | 26.9% |
+| 4 | 240 | 62.2% | 32.9% | 23.6% | 20.6% |
+| 5 | 139 | 69.8% | 26.6% | 20.0% | 19.0% |
+| 6 | 47 | 70.8% | 36.2% | 29.9% | 28.9% |
 | 7 | 9 | 100.0% | 66.7% | 66.7% | 66.7% |
 | 8 | 4 | 100.0% | 50.0% | 50.0% | 50.0% |
 
@@ -82,11 +146,10 @@ Validation accuracy is still rising with more training data:
 
 | Training examples | Exact leaf accuracy |
 | --- | --- |
-| 1,025 | 35.3% |
-| 2,050 | 42.9% |
-| 4,100 | 49.4% |
+| 972 | 35.9% |
+| 1,945 | 44.1% |
+| 3,891 | 48.3% |
 
 ## Data and model licences
 
-Amazon Reviews 2023 comes from the McAuley Lab. Qwen2.5-VL-3B-Instruct is under the Qwen Research
-License, which is non-commercial. Qwen3.5-2B and Qwen3.5-4B are under Apache-2.0.
+Amazon Reviews 2023 comes from the McAuley Lab. Qwen3.5-2B and Qwen3.5-4B are under Apache-2.0.

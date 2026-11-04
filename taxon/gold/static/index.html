@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Taxon gold labels</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <strong>Gold labels</strong>
+  <span id="progress" aria-live="polite"></span>
+  <div class="bar" aria-hidden="true"><div id="bar-fill"></div></div>
+</header>
+<main id="main">
+  <section class="product" aria-label="Product">
+    <img id="image" alt="" referrerpolicy="no-referrer">
+    <h1 id="title"></h1>
+    <p id="price" class="muted"></p>
+    <ul id="features"></ul>
+    <p id="description"></p>
+    <dl id="details"></dl>
+  </section>
+  <section class="work">
+    <div id="pick">
+      <h2>Baseline suggestions</h2>
+      <ol id="suggestions" class="options"></ol>
+      <label for="search">Search all categories</label>
+      <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Press / to search">
+      <ol id="results" class="options"></ol>
+    </div>
+    <div id="refine" hidden>
+      <h2>Chosen category</h2>
+      <p id="chosen"></p>
+      <div id="refine-nav">
+        <button id="parent" type="button">Up a level</button>
+      </div>
+      <h3 id="children-title">Go deeper</h3>
+      <ol id="children" class="options"></ol>
+      <h3>Attributes <span class="muted">optional, only what the listing shows</span></h3>
+      <div id="attributes"></div>
+      <datalist id="value-options"></datalist>
+      <button id="save" type="button" class="primary">Save and next</button>
+    </div>
+    <p id="error" role="alert"></p>
+  </section>
+</main>
+<section id="done" hidden>
+  <h1>Target reached</h1>
+  <p id="done-text"></p>
+  <p>To grow the set, restart with a higher target, such as <code>make gold TARGET=500</code>.</p>
+  <button id="done-undo" type="button">Undo last</button>
+</section>
+<footer id="keys"></footer>
+<script src="/app.js"></script>
+</body>
+</html>

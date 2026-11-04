@@ -36,19 +36,14 @@ def _hf_tokenizer(model: str, revision: str, sha256: str) -> PinnedFile:
     )
 
 
-# Qwen3.5-2B and Qwen3.5-4B share this vocabulary and merge table, so one trie serves both.
-TOKENIZERS = {
-    "qwen3.5": _hf_tokenizer(
-        "Qwen/Qwen3.5-2B",
-        "15852e8c16360a2fea060d615a32b45270f8a8fc",
-        "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42",
-    ),
-    "qwen2.5-vl": _hf_tokenizer(
-        "Qwen/Qwen2.5-VL-3B-Instruct",
-        "66285546d2b821cf421d4f5eb2576359d3770cd3",
-        "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
-    ),
-}
+# The main model is Qwen3.5-2B. Qwen3.5-4B shares this vocabulary and merge table, so the same trie
+# serves it if GRPO fits in memory at milestone 3.
+MODEL = "Qwen/Qwen3.5-2B"
+TOKENIZER = _hf_tokenizer(
+    MODEL,
+    "15852e8c16360a2fea060d615a32b45270f8a8fc",
+    "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42",
+)
 
 AMAZON_REPO = "McAuley-Lab/Amazon-Reviews-2023"
 AMAZON_REVISION = "2b6d039ed471f2ba5fd2acb718bf33b0a7e5598e"
