@@ -29,27 +29,34 @@ into `results/`, and takes a few minutes on a CPU. It never calls a paid API and
 ## Labeling
 
 Copy `.env.example` to `.env` and fill in the keys. Each annotator picks from a shortlist of up to
-50 paths or says none, and only a none starts a walk down the tree. A frontier model settles
-disagreements or abstains. Every response is cached on disk, and hard caps per vendor stop the run
-before they are passed.
+50 paths or says none, and only a none starts a walk down the tree. A stronger model settles real
+disagreements or abstains, and is scored against the hand labels. Every response is cached on disk,
+and hard caps of $20 for Anthropic, $10 for OpenAI and $10 for Google stop a run before they are
+passed.
 
 | Role | Model |
 | --- | --- |
 | Annotators | `claude-haiku-5-5`, `gpt-6-luna`, `gemini-3.5-flash-lite` |
-| Arbitrator | `claude-opus-5-5` |
+| Arbitrator | `claude-sonnet-5-5` |
 
 ```bash
 make label-fake
 make label-dry-run
 make label-first
-make label-rest
 make label-gold-pool
 ```
 
 `make label-fake` runs the flow against in-memory vendors, with no keys and no spending. The others
-spend money. The dry run prints a cost estimate per vendor from 100 products, and later stages
-refuse to start without it. The gold-pool stage exists only to score the pipeline against hand
-labels, and its output never reaches training.
+spend money. The dry run prints the measured cost per vendor from 100 products, and later stages
+refuse to start without it. `make label-first` labels 2,000 products. Whether to label more is
+decided from the learning curve at milestone 3. The gold-pool stage exists only to score the
+pipeline against hand labels, and its output never reaches training.
+
+Hand labels and paid responses are not in git, so keep a copy of them outside the repository:
+
+```bash
+make backup
+```
 
 ## Gold set
 

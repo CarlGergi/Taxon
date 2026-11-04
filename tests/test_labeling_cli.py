@@ -55,11 +55,18 @@ def test_a_fake_dry_run_prints_an_estimate_per_vendor(tmp_path, inputs, capsys):
     out = capsys.readouterr().out
     for vendor in ("anthropic", "openai", "google"):
         assert f"{vendor}: $" in out
-    assert "cap $80.00" in out
+    assert "cap $20.00" in out
+    assert "measured on this sample" in out
     report = json.loads((tmp_path / "results" / "labeling_dry_run.json").read_text())
     assert report["sample"] == 6
     assert report["fake"] is True
-    assert set(report["cost"]["openai"]) >= {"first_run", "all_training", "cap", "spent"}
+    assert set(report["cost"]["openai"]) >= {
+        "first_run",
+        "first_run_and_gold_pool",
+        "all_training",
+        "cap",
+        "spent",
+    }
     assert "unanimous" in report["agreement"]["agreement"]
 
 
@@ -76,6 +83,11 @@ def test_a_run_refuses_when_the_estimate_passes_a_cap(tmp_path, inputs):
     path.write_text(json.dumps(report))
     with pytest.raises(SystemExit, match="passes the cap for: google"):
         run(tmp_path, "run", "--first", "--fake")
+
+
+def test_the_gold_pool_stage_also_needs_a_dry_run(tmp_path, inputs):
+    with pytest.raises(SystemExit, match="dry run first"):
+        run(tmp_path, "run", "--gold-pool", "--fake")
 
 
 def test_the_first_stage_then_the_rest(tmp_path, inputs, capsys):

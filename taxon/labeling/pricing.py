@@ -30,6 +30,7 @@ class Price:
 # bills cached writes at the input rate. Google bills cache hits at its standard caching rate.
 PRICES = {
     ("anthropic", "claude-haiku-5-5"): Price(0.05, 0.005, 0.10, 0.25),
+    ("anthropic", "claude-sonnet-5-5"): Price(1.00, 0.05, 2.00, 5.00),
     ("anthropic", "claude-opus-5-5"): Price(2.00, 0.10, 4.00, 10.00),
     ("openai", "gpt-6-luna"): Price(0.05, 0.005, 0.05, 0.25),
     ("google", "gemini-3.5-flash-lite"): Price(0.15, 0.03, 0.15, 1.25),

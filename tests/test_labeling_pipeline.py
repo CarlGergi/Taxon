@@ -15,7 +15,12 @@ from taxon.labeling.prompts import (
     stable_prefix,
     walk_request,
 )
-from taxon.labeling.report import agreement_report, cost_projection, format_projection
+from taxon.labeling.report import (
+    agreement_report,
+    arbitrator_score,
+    cost_projection,
+    format_projection,
+)
 from taxon.labeling.runner import BatchRunner
 
 HAIKU = ANNOTATORS[0]
@@ -219,7 +224,7 @@ def test_disagreement_goes_to_the_arbitrator_who_can_settle_it(build):
     assert (row["path"], row["source"]) == (KNIVES, "arbitrated")
     assert row["proposals"] == sorted([TOTES, KNIVES])
     sent = [r.config.model for batch in clients["anthropic"].submitted for r in batch]
-    assert sent == ["claude-haiku-5-5", "claude-opus-5-5"]
+    assert sent == ["claude-haiku-5-5", "claude-sonnet-5-5"]
 
 
 def test_the_arbitrator_may_abstain(build):
@@ -228,6 +233,25 @@ def test_the_arbitrator_may_abstain(build):
     [row] = labeler.label([product()], {"A1": CANDIDATES})
     assert row["path"] is None
     assert row["source"] == "abstained"
+
+
+def test_two_agreeing_with_one_abstention_needs_no_arbitrator(build):
+    labeler, clients = build(agreeing(TOTES))
+    clients["google"].responder = lambda r: LLMResult(r.key, Status.REFUSED)
+    [row] = labeler.label([product()], {"A1": CANDIDATES})
+    assert (row["path"], row["source"]) == (TOTES, "agreed_with_abstention")
+    assert "arbitrator_status" not in row
+    models = [r.config.model for batch in clients["anthropic"].submitted for r in batch]
+    assert "claude-sonnet-5-5" not in models
+
+
+def test_unanimous_answers_never_reach_the_arbitrator(build):
+    labeler, clients = build(agreeing(TOTES))
+    products = [product(f"A{i}", title=f"Item {i}") for i in range(5)]
+    rows = labeler.label(products, {p["parent_asin"]: CANDIDATES for p in products})
+    assert all(row["source"] == "unanimous" for row in rows)
+    models = {r.config.model for batch in clients["anthropic"].submitted for r in batch}
+    assert models == {"claude-haiku-5-5"}
 
 
 def test_one_proposal_and_two_abstentions_still_goes_to_the_arbitrator(build):
@@ -244,7 +268,6 @@ def test_a_refusal_abstains_without_a_walk(build):
     assert row["annotators"]["google"]["status"] == "refused"
     assert row["annotators"]["google"]["path"] is None
     assert clients["google"].requests_sent == 1
-    assert row["source"] == "arbitrated" or row["source"] == "abstained"
 
 
 def test_a_truncated_reply_abstains_rather_than_being_parsed(build):
@@ -276,6 +299,9 @@ def test_costs_are_tracked_per_vendor_with_the_arbitrator_under_its_vendor(build
     [row] = labeler.label([product()], {"A1": CANDIDATES})
     assert set(row["cost"]) == {"anthropic", "openai", "google"}
     assert all(cost > 0 for cost in row["cost"].values())
+    assert 0 < row["arbitrator_cost"] < row["cost"]["anthropic"]
+    assert row["tokens"]["openai"]["input"] > 0
+    assert row["tokens"]["openai"]["output"] > 0
 
 
 def test_a_second_run_from_cache_gives_the_same_rows_and_no_calls(build):
@@ -313,7 +339,7 @@ def test_hitting_a_cap_stops_and_a_later_run_finishes_without_repaying(tmp_path,
     sent_to_anthropic = clients["anthropic"].requests_sent
     assert sent_to_anthropic == 4
 
-    high = {"anthropic": 80.0, "openai": 70.0, "google": 70.0}
+    high = {"anthropic": 20.0, "openai": 10.0, "google": 10.0}
     rows = Labeler(taxonomy, runner(high)).label(products, candidates)
     assert all(row["path"] == TOTES for row in rows)
     assert clients["anthropic"].requests_sent == sent_to_anthropic
@@ -423,13 +449,66 @@ def test_projection_scales_per_product_cost_and_flags_a_cap():
     assert anthropic["per_product"] == pytest.approx(0.02)
     assert anthropic["first"]["estimate"] == pytest.approx(40.0)
     assert anthropic["all"]["estimate"] == pytest.approx(190.0)
+    assert anthropic["sample_cost"] == pytest.approx(0.04)
+    assert anthropic["cached_share_of_input"] is None
     assert anthropic["first"]["upper_95"] > anthropic["first"]["estimate"]
     assert anthropic["spent"] == 1.0
     assert anthropic["all"]["fits_cap"] is False
     assert report["openai"]["all"]["fits_cap"] is True
     text = format_projection(report)
     assert "EXCEEDS CAP" in text
-    assert "anthropic" in text and "cap $80.00" in text
+    assert "anthropic" in text and "cap $20.00" in text
+    assert "measured on this sample" in text
+    assert "input served from cache: unknown" in text
+
+
+def test_projection_reports_cache_share_output_and_arbitrator_cost():
+    tokens = {"input": 10, "cached": 70, "written": 20, "output": 6}
+    first = row_with(["A"] * 3, cost={"anthropic": 0.02})
+    second = row_with(["A"] * 3, cost={"anthropic": 0.02})
+    rows = [
+        first | {"tokens": {"anthropic": tokens}, "arbitrator_cost": 0.01},
+        second | {"tokens": {"anthropic": tokens}},
+    ]
+    report = cost_projection(rows, {"first": 100}, {})
+    anthropic = report["anthropic"]
+    assert anthropic["cached_share_of_input"] == pytest.approx(0.7)
+    assert anthropic["mean_output_tokens"] == 6
+    assert anthropic["arbitrator_per_product"] == pytest.approx(0.005)
+    text = format_projection(report)
+    assert "input served from cache: 70%" in text
+    assert "of which arbitrator" in text
+
+
+def test_arbitrator_stats_are_reported():
+    ran = row_with(["A", "B", "C"], "arbitrated") | {"arbitrator_status": "ok"}
+    refused = row_with(["A", "B", "C"], "abstained", final=None)
+    refused = refused | {"arbitrator_status": "refused"}
+    report = agreement_report([row_with(["A"] * 3), ran, refused])
+    assert report["arbitrator"] == {"ran": 2, "ok": 1, "refused": 1}
+
+
+def disputed(asin, paths, final):
+    row = row_with(paths, "arbitrated" if final else "abstained", final=final)
+    return row | {"parent_asin": asin, "arbitrator_status": "ok"}
+
+
+def test_the_arbitrator_is_scored_against_gold_and_a_majority_vote():
+    rows = [
+        disputed("A", ["X", "X", "Y"], "Y"),
+        disputed("B", ["X", "X", "Y"], "X"),
+        disputed("C", ["P", "Q", "R"], None),
+        row_with(["S", "S", "S"]) | {"parent_asin": "D"},
+    ]
+    score = arbitrator_score(rows, {"A": "Y", "B": "Y", "C": "P", "D": "S"})
+    assert score["disagreements_with_hand_labels"] == 3
+    assert score["arbitrator"]["exact_leaf_accuracy"] == pytest.approx(1 / 3)
+    assert score["majority_vote"]["exact_leaf_accuracy"] == 0.0
+
+
+def test_arbitrator_scoring_waits_for_a_hand_labeled_disagreement():
+    assert arbitrator_score([disputed("A", ["X", "Y", "Z"], "X")], {"B": "X"}) is None
+    assert arbitrator_score([row_with(["S"] * 3) | {"parent_asin": "D"}], {"D": "S"}) is None
 
 
 def test_projection_needs_a_sample():

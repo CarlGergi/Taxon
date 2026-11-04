@@ -1,7 +1,8 @@
 """Label products with three annotators and an arbitrator.
 
 Each annotator picks from a retrieved shortlist or says none. Only a none triggers a top-down
-walk. Unanimous answers are accepted, anything else goes to the arbitrator, who may abstain.
+walk. Answers are accepted when at least two annotators answered and all who answered agree. Only
+a real conflict goes to the arbitrator, who may abstain.
 """
 
 from __future__ import annotations
@@ -25,8 +26,11 @@ ANNOTATORS = (
     ModelConfig("openai", "gpt-6-luna", max_tokens=1_024, effort="low"),
     ModelConfig("google", "gemini-3.5-flash-lite", max_tokens=1_024, effort="low"),
 )
-ARBITRATOR = ModelConfig("anthropic", "claude-opus-5-5", max_tokens=4_096, effort="medium")
+# Sonnet at low effort is the cheap default. Move to Opus only if scoring against the gold set
+# shows Sonnet is clearly worse.
+ARBITRATOR = ModelConfig("anthropic", "claude-sonnet-5-5", max_tokens=2_048, effort="low")
 MAX_WALK_STEPS = 10
+MIN_AGREEING = 2
 
 ImageFor = Callable[[dict], tuple | None]
 
@@ -127,13 +131,15 @@ class Labeler:
         requests = {}
         for product in products:
             row = rows[product["parent_asin"]]
-            paths = [a["path"] for a in row["annotators"].values()]
-            proposals = sorted({p for p in paths if p})
+            answered = [a["path"] for a in row["annotators"].values() if a["path"]]
+            proposals = sorted(set(answered))
             row["proposals"] = proposals
             if not proposals:
                 row["source"] = "no_proposal"
-            elif len(proposals) == 1 and None not in paths:
+            elif len(proposals) == 1 and len(answered) == len(self.annotators):
                 row["path"], row["source"] = proposals[0], "unanimous"
+            elif len(proposals) == 1 and len(answered) >= MIN_AGREEING:
+                row["path"], row["source"] = proposals[0], "agreed_with_abstention"
             else:
                 image = self.image_for(product)
                 requests[product["parent_asin"]] = arbitrate_request(
@@ -144,6 +150,7 @@ class Labeler:
             row = rows[asin]
             result = results[request.key]
             _add_cost(row, self.arbitrator.vendor, result)
+            row["arbitrator_cost"] = result.cost
             row["arbitrator_status"] = result.status.value
             choice = parse_choice(result.text, len(row["proposals"]))
             if result.status is Status.OK and choice:
@@ -162,6 +169,7 @@ class Labeler:
                     c.vendor: {"path": None, "via": None, "status": None} for c in self.annotators
                 },
                 "cost": {},
+                "tokens": {},
             }
             for p in products
         }
@@ -173,3 +181,8 @@ class Labeler:
 
 def _add_cost(row: dict, vendor: str, result: LLMResult) -> None:
     row["cost"][vendor] = row["cost"].get(vendor, 0.0) + result.cost
+    tokens = row["tokens"].setdefault(vendor, {"input": 0, "cached": 0, "written": 0, "output": 0})
+    tokens["input"] += result.usage.input_tokens
+    tokens["cached"] += result.usage.cached_tokens
+    tokens["written"] += result.usage.cache_write_tokens
+    tokens["output"] += result.usage.output_tokens

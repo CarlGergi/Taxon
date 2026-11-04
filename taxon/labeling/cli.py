@@ -109,7 +109,11 @@ def dry_run(n: int, fake: bool, space: Workspace, secrets: Secrets) -> dict:
     rows = labeler.label(sample, shortlists)
     if tracer is not None:
         tracer.flush()
-    targets = {"first_run": FIRST_RUN_PRODUCTS, "all_training": len(order)}
+    targets = {
+        "first_run": FIRST_RUN_PRODUCTS,
+        "first_run_and_gold_pool": FIRST_RUN_PRODUCTS + len(gold),
+        "all_training": len(order),
+    }
     report = {
         "sample": n,
         "fake": fake,
@@ -120,18 +124,22 @@ def dry_run(n: int, fake: bool, space: Workspace, secrets: Secrets) -> dict:
     return report
 
 
-def run_stage(n: int | None, fake: bool, space: Workspace, secrets: Secrets) -> dict:
-    """Label the first `n` training products, or all of them. Requires a passing dry run."""
+def _require_estimate(space: Workspace, stage: str) -> None:
+    """Refuse a stage until a dry run has been seen, or if its estimate would pass a cap."""
     if not space.dry_run.exists():
         raise SystemExit("Run the dry run first, so its cost estimate has been seen.")
     estimate = json.loads(space.dry_run.read_text(encoding="utf-8"))
-    taxonomy, products, gold, shortlists = _load_inputs()
-    order = labeling_order(products, gold)
-    sample = order[:n] if n else order
-    stage = "first_run" if n == FIRST_RUN_PRODUCTS else "all_training"
     over = [v for v, e in estimate["cost"].items() if not e[stage]["fits_cap"]]
     if over:
         raise SystemExit(f"The dry run estimates this stage passes the cap for: {', '.join(over)}")
+
+
+def run_stage(n: int | None, fake: bool, space: Workspace, secrets: Secrets) -> dict:
+    """Label the first `n` training products, or all of them. Requires a passing dry run."""
+    _require_estimate(space, "first_run" if n == FIRST_RUN_PRODUCTS else "all_training")
+    taxonomy, products, gold, shortlists = _load_inputs()
+    order = labeling_order(products, gold)
+    sample = order[:n] if n else order
     labeler, runner, tracer = _build_labeler(taxonomy, space, fake, secrets)
     if not fake:
         print(ImageStore(space.images).ensure_all(sample))
@@ -158,6 +166,7 @@ def run_gold_pool(fake: bool, space: Workspace, secrets: Secrets) -> dict:
     These rows stay in their own file. They never join the training labels, and the labeling page
     never reads them.
     """
+    _require_estimate(space, "first_run_and_gold_pool")
     taxonomy, products, gold, shortlists = _load_inputs()
     pool = set(gold)
     sample = [p for p in products if p["parent_asin"] in pool]
@@ -180,7 +189,9 @@ def _parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="label a stage, after a passing dry run")
     stage = run.add_mutually_exclusive_group(required=True)
     stage.add_argument("--first", action="store_true", help=f"{FIRST_RUN_PRODUCTS:,} products")
-    stage.add_argument("--rest", action="store_true", help="every training product")
+    stage.add_argument(
+        "--rest", action="store_true", help="every training product, only after milestone 3 decides"
+    )
     stage.add_argument(
         "--gold-pool", action="store_true", help="the gold pool, kept apart, to score the pipeline"
     )

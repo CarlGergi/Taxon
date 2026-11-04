@@ -211,11 +211,13 @@ def test_anthropic_treats_other_outcomes_as_failed(server, kind):
     assert result.status is Status.FAILED
 
 
-def test_the_arbitrator_request_uses_opus_with_the_same_shape():
+def test_the_arbitrator_request_uses_sonnet_with_the_same_shape():
     params = AnthropicBatchClient.params(request(ARBITRATOR))
-    assert params["model"] == "claude-opus-5-5"
-    assert params["output_config"]["effort"] == "medium"
+    assert params["model"] == "claude-sonnet-5-5"
+    assert params["output_config"]["effort"] == "low"
+    assert params["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert "fallbacks" not in params
+    assert "thinking" not in params
 
 
 # OpenAI

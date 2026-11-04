@@ -25,7 +25,7 @@ from taxon.gold.pool import (
 )
 from taxon.gold.server import LABELS_PATH
 from taxon.gold.store import GoldStore
-from taxon.labeling.report import agreement_report
+from taxon.labeling.report import agreement_report, arbitrator_score
 from taxon.labeling.retrieval import CandidateRetriever, build_shortlists, recall_at
 from taxon.pins import (
     AMAZON_FILE_SIZES,
@@ -169,6 +169,9 @@ def gold_report(
             report["pipeline_labels"] = evaluate(
                 [gold[a]["path"] for a in checked], [rows[a]["path"] for a in checked]
             )
+        arbitration = arbitrator_score(list(rows.values()), {a: gold[a]["path"] for a in asins})
+        if arbitration is not None:
+            report["arbitration"] = arbitration
     return report
 
 

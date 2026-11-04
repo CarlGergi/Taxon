@@ -1,8 +1,9 @@
-.PHONY: setup test lint reproduce clean gold label-fake label-dry-run label-first label-rest \
+.PHONY: setup test lint reproduce clean backup gold label-fake label-dry-run label-first \
 	label-gold-pool tasks-draft tasks-review tasks-check
 
 TARGET ?= 200
 TASKS ?= 100
+BACKUP_DIR ?= $(HOME)/taxon-backups
 
 setup:
 	uv sync
@@ -23,6 +24,10 @@ reproduce:
 clean:
 	rm -rf results data/derived
 
+# Copy hand labels and paid responses into a zip outside the repository.
+backup:
+	uv run python -m taxon.backup --dir "$(BACKUP_DIR)"
+
 # Hand-label the gold set. Labels are kept in data/gold/ and survive make clean.
 gold:
 	uv run python -m taxon.gold --target $(TARGET)
@@ -38,9 +43,6 @@ label-dry-run:
 
 label-first:
 	uv run python -m taxon.labeling run --first
-
-label-rest:
-	uv run python -m taxon.labeling run --rest
 
 label-gold-pool:
 	uv run python -m taxon.labeling run --gold-pool

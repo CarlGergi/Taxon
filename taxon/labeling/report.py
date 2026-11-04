@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import math
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from itertools import combinations
 from statistics import mean, stdev
 
+from eval.metrics import evaluate
 from taxon.labeling.budget import CAPS
 from taxon.taxonomy import path_prefixes
+
+ARBITRATOR_VENDOR = "anthropic"
 
 
 def _rate(numerator: int, denominator: int) -> float | None:
@@ -68,12 +72,14 @@ def agreement_report(rows: list[dict]) -> dict:
 
     n = len(rows)
     sources = Counter(row["source"] for row in rows)
+    arbitrated = Counter(row["arbitrator_status"] for row in rows if "arbitrator_status" in row)
     return {
         "n": n,
         "agreement": {k: groups[k] / n for k in ("unanimous", "majority", "no_two_agree")},
         "no_answers": groups["no_answers"] / n,
         "sources": dict(sorted(sources.items())),
         "labeled": sum(bool(row["path"]) for row in rows) / n,
+        "arbitrator": {"ran": sum(arbitrated.values()), **dict(sorted(arbitrated.items()))},
         "pairwise_exact": {p: pair_exact[p] / pair_seen[p] for p in sorted(pair_seen)},
         "pairwise_by_level": {
             str(level): level_agree[level] / level_seen[level] for level in sorted(level_seen)
@@ -95,6 +101,29 @@ def agreement_report(rows: list[dict]) -> dict:
     }
 
 
+def arbitrator_score(rows: list[dict], gold: Mapping[str, str]) -> dict | None:
+    """How the arbitrator does on real disagreements, against hand labels and a majority vote.
+
+    A majority vote costs nothing, so an arbitrator that cannot beat it is not earning its price.
+    Abstentions count as wrong for both. Returns None until a disagreement has a hand label.
+    """
+    disputed = [r for r in rows if "arbitrator_status" in r and r["parent_asin"] in gold]
+    if not disputed:
+        return None
+    golds = [gold[r["parent_asin"]] for r in disputed]
+
+    def majority(row: dict) -> str | None:
+        votes = Counter(a["path"] for a in row["annotators"].values() if a["path"])
+        top = votes.most_common(1)
+        return top[0][0] if top and top[0][1] >= 2 else None
+
+    return {
+        "disagreements_with_hand_labels": len(disputed),
+        "arbitrator": evaluate(golds, [r["path"] for r in disputed]),
+        "majority_vote": evaluate(golds, [majority(r) for r in disputed]),
+    }
+
+
 def cost_projection(rows: list[dict], targets: dict[str, int], spent: dict[str, float]) -> dict:
     """Per-vendor estimates from a sample's per-product costs, with a 95% upper bound.
 
@@ -107,11 +136,19 @@ def cost_projection(rows: list[dict], targets: dict[str, int], spent: dict[str, 
         costs = [row["cost"].get(vendor, 0.0) for row in rows]
         per_product = mean(costs)
         upper = per_product + 1.96 * stdev(costs) / math.sqrt(len(costs))
+        tokens = [row.get("tokens", {}).get(vendor, {}) for row in rows]
+        cached = sum(t.get("cached", 0) for t in tokens)
+        all_input = cached + sum(t.get("input", 0) + t.get("written", 0) for t in tokens)
         entry = {
             "per_product": per_product,
+            "sample_cost": sum(costs),
+            "cached_share_of_input": _rate(cached, all_input),
+            "mean_output_tokens": mean(t.get("output", 0) for t in tokens),
             "cap": CAPS[vendor],
             "spent": spent.get(vendor, 0.0),
         }
+        if vendor == ARBITRATOR_VENDOR:
+            entry["arbitrator_per_product"] = mean(row.get("arbitrator_cost", 0.0) for row in rows)
         for name, n in targets.items():
             estimate = per_product * n
             bound = upper * n
@@ -129,9 +166,19 @@ def format_projection(report: dict) -> str:
     lines = []
     for vendor, entry in report.items():
         lines.append(
-            f"{vendor}: ${entry['per_product']:.5f} per product, "
-            f"${entry['spent']:.2f} spent, cap ${entry['cap']:.2f}"
+            f"{vendor}: ${entry['sample_cost']:.4f} measured on this sample, "
+            f"${entry['per_product']:.5f} per product, ${entry['spent']:.2f} spent in total, "
+            f"cap ${entry['cap']:.2f}"
         )
+        share = entry["cached_share_of_input"]
+        cached = "unknown" if share is None else f"{share:.0%}"
+        lines.append(
+            f"  input served from cache: {cached}, "
+            f"mean output tokens per product: {entry['mean_output_tokens']:.0f}"
+        )
+        if "arbitrator_per_product" in entry:
+            arbitrator = entry["arbitrator_per_product"]
+            lines.append(f"  of which arbitrator: ${arbitrator:.5f} per product")
         for name, value in entry.items():
             if isinstance(value, dict):
                 verdict = "fits" if value["fits_cap"] else "EXCEEDS CAP"

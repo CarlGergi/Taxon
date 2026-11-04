@@ -14,6 +14,7 @@ from taxon.pins import ROOT
 
 HAIKU = ModelConfig("anthropic", "claude-haiku-5-5", 1024, "low")
 OPUS = ModelConfig("anthropic", "claude-opus-5-5", 4096, "medium")
+SONNET = ModelConfig("anthropic", "claude-sonnet-5-5", 2048, "low")
 LUNA = ModelConfig("openai", "gpt-6-luna", 1024, "low")
 
 
@@ -112,6 +113,7 @@ def test_cost_applies_each_token_class_at_its_own_rate():
     )
     assert cost_of(usage, HAIKU) == pytest.approx(0.05 + 0.005 + 0.10 + 0.25)
     assert cost_of(usage, OPUS) == pytest.approx(2.00 + 0.10 + 4.00 + 10.00)
+    assert cost_of(usage, SONNET) == pytest.approx(1.00 + 0.05 + 2.00 + 5.00)
 
 
 def test_batch_prices_are_half_the_published_list_prices():
@@ -168,7 +170,7 @@ def test_failures_are_not_cached_so_they_can_be_retried(tmp_path):
 
 
 def test_caps_are_the_agreed_amounts():
-    assert CAPS == {"anthropic": 80.0, "openai": 70.0, "google": 70.0}
+    assert CAPS == {"anthropic": 20.0, "openai": 10.0, "google": 10.0}
 
 
 def test_a_reservation_counts_until_it_settles_to_the_real_cost(tmp_path):
@@ -177,7 +179,7 @@ def test_a_reservation_counts_until_it_settles_to_the_real_cost(tmp_path):
     assert budget.spent("openai") == 10.0
     budget.settle("openai", "b1", 2.5)
     assert budget.spent("openai") == 2.5
-    assert budget.remaining("openai") == 67.5
+    assert budget.remaining("openai") == 7.5
 
 
 def test_the_ledger_survives_a_restart_including_open_reservations(tmp_path):
