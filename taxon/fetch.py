@@ -40,6 +40,11 @@ def _open(url: str, headers: dict[str, str], attempts: int, backoff: float):
     raise RuntimeError("unreachable")
 
 
+def open_url(url: str, attempts: int = 3, backoff: float = 1.0):
+    """Open a URL with the same TLS settings and retries as pinned downloads."""
+    return _open(url, {}, attempts, backoff)
+
+
 def sha256_of(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as f:

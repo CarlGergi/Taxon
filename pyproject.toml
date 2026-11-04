@@ -4,8 +4,14 @@ version = "0.1.0"
 description = "Catalog intelligence for AI shopping agents"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "anthropic>=2.4.0",
     "certifi>=2026.10.23",
+    "google-genai>=2.34.0",
+    "langfuse>=5.1.0",
     "numpy>=2.0",
+    "openai>=3.44.0",
+    "pillow>=13.0.0",
+    "python-dotenv>=1.2.4",
     "scikit-learn>=1.5",
     "tokenizers>=0.21",
 ]
