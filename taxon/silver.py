@@ -63,7 +63,33 @@ DOMAIN_VERTICALS = {
 }
 
 
+_IRREGULAR = {
+    "calves": "calf",
+    "children": "child",
+    "feet": "foot",
+    "geese": "goose",
+    "halves": "half",
+    "hooves": "hoof",
+    "knives": "knife",
+    "leaves": "leaf",
+    "lives": "life",
+    "loaves": "loaf",
+    "men": "man",
+    "mice": "mouse",
+    "scarves": "scarf",
+    "shelves": "shelf",
+    "teeth": "tooth",
+    "wolves": "wolf",
+    "women": "woman",
+}
+
+
 def _singular(word: str) -> str:
+    if word in _IRREGULAR:
+        return _IRREGULAR[word]
+    # "hoodie" and "hoodies" must land on the same form, whatever that form looks like.
+    if len(word) > 3 and word.endswith("ie"):
+        return word[:-2] + "y"
     if len(word) > 4 and word.endswith("ies"):
         return word[:-3] + "y"
     if len(word) > 4 and word.endswith(("ches", "shes", "sses", "xes")):
@@ -73,10 +99,15 @@ def _singular(word: str) -> str:
     return word
 
 
-def tokens(text: str) -> frozenset[str]:
+def singular_words(text: str) -> list[str]:
+    """Lowercase ASCII words in order, singular, with stopwords removed."""
     ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
     words = re.findall(r"[a-z0-9]+", ascii_text.lower())
-    return frozenset(_singular(w) for w in words if w not in _STOPWORDS)
+    return [_singular(w) for w in words if w not in _STOPWORDS]
+
+
+def tokens(text: str) -> frozenset[str]:
+    return frozenset(singular_words(text))
 
 
 def _overlap(a: frozenset[str], b: frozenset[str]) -> float:

@@ -158,3 +158,36 @@ def test_products_with_no_body_text_at_all_still_train():
     y = [labels[p["parent_asin"]] for p in products]
     assert not any(body_text(p).strip() for p in products)
     assert TfidfLogisticRegression(n_jobs=1).fit(products, y).predict(products[:1])
+
+
+def test_top_k_orders_labels_and_leads_with_the_prediction():
+    products, labels = toy_set(90)
+    y = [labels[p["parent_asin"]] for p in products]
+    model = TfidfLogisticRegression(c=10.0, n_jobs=1).fit(products, y)
+    query = [product("Q", "bread knife deluxe")]
+    assert model.top_k(query, 1) == [model.predict(query)]
+    assert len(model.top_k(query, 2)[0]) == 2
+    assert len(model.top_k(query, 99)[0]) == 3
+
+
+def test_top_k_works_with_two_classes():
+    products = [product("A", "knife"), product("B", "tote")] * 3
+    y = ["Home", "Apparel"] * 3
+    model = TfidfLogisticRegression(c=10.0, n_jobs=1).fit(products, y)
+    assert model.top_k([product("Q", "knife")], 2) == [["Home", "Apparel"]]
+
+
+def test_held_out_products_reach_no_split(taxonomy, monkeypatch):
+    products, labels = toy_set()
+    held = {"A0", "A1", "A2"}
+    trained_on = []
+    original = TfidfLogisticRegression.fit
+
+    def spy(self, rows, y):
+        trained_on.extend(p["parent_asin"] for p in rows)
+        return original(self, rows, y)
+
+    monkeypatch.setattr(TfidfLogisticRegression, "fit", spy)
+    result = run_baseline(products, labels, taxonomy, SEED, "toy", n_jobs=1, held_out=held)
+    assert not (set(trained_on) & held)
+    assert sum(result["splits"].values()) == len(products) - 3

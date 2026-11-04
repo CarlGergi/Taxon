@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 
 import numpy as np
 from scipy import sparse
@@ -15,7 +15,7 @@ from eval.metrics import evaluate
 from taxon.products import assign_split, seeded_hash
 from taxon.taxonomy import Taxonomy
 
-C_GRID = (1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0)
+C_GRID = (1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0, 10000000.0)
 LEARNING_CURVE = (0.25, 0.5, 1.0)
 MAX_FEATURES = 50_000
 # Keeps the body vocabulary non-empty when no product in a batch has any body text.
@@ -67,6 +67,17 @@ class TfidfLogisticRegression:
     def predict(self, products: Sequence[dict]) -> list[str]:
         return self._model.predict(self._features(products)).tolist()
 
+    def top_k(self, products: Sequence[dict], k: int) -> list[list[str]]:
+        """The `k` highest-scoring labels per product, best first, ties broken by label."""
+        scores = self._model.decision_function(self._features(products))
+        if scores.ndim == 1:
+            scores = np.column_stack([-scores, scores])
+        classes = self._model.classes_
+        order = np.arange(len(classes))
+        return [
+            [str(classes[i]) for i in np.lexsort((order, -row))[:k]] for row in scores
+        ]
+
 
 def most_frequent_label(labels: Iterable[str]) -> str:
     """The commonest label, ties broken alphabetically so the result is deterministic."""
@@ -85,10 +96,16 @@ def run_baseline(
     seed: int,
     label_source: str,
     n_jobs: int = -1,
+    held_out: Collection[str] = (),
 ) -> dict:
-    """Choose C on the validation split, then score once on the test split."""
+    """Choose C on the validation split, then score once on the test split.
+
+    Products in `held_out`, the gold pool, never reach any split.
+    """
     splits: dict[str, list[dict]] = {"train": [], "val": [], "test": []}
     for product in products:
+        if product["parent_asin"] in held_out:
+            continue
         if labels.get(product["parent_asin"]):
             splits[assign_split(product["parent_asin"], seed)].append(product)
     gold = {

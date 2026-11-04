@@ -22,6 +22,26 @@ def test_tokens_normalize_case_plurals_accents_and_stopwords():
     assert tokens("the of and") == frozenset()
 
 
+@pytest.mark.parametrize(
+    ("one", "many"),
+    [
+        ("knife", "knives"),
+        ("shelf", "shelves"),
+        ("glove", "gloves"),
+        ("sleeve", "sleeves"),
+        ("hoodie", "hoodies"),
+        ("cookie", "cookies"),
+        ("cherry", "cherries"),
+        ("woman", "women"),
+        ("brush", "brushes"),
+        ("box", "boxes"),
+        ("bag", "bags"),
+    ],
+)
+def test_a_word_and_its_plural_share_one_form(one, many):
+    assert tokens(one) == tokens(many)
+
+
 def test_matches_the_deepest_breadcrumb_entry(labeler):
     assert labeler.label("Toy_Apparel", ["Apparel", "Bags", "Totes"]) == "Apparel > Bags > Totes"
 
