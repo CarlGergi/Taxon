@@ -33,10 +33,23 @@ def demo_attributes(request: LLMRequest) -> LLMResult:
     return LLMResult(request.key, Status.OK, text, _usage_for(request, text))
 
 
+def demo_judge(request: LLMRequest) -> LLMResult:
+    """Mostly yes, sometimes no, now and then unsure."""
+    seed = hashlib.sha256(request.user.encode()).digest()
+    answers = {
+        name: "yes" if seed[i] < 200 else "no" if seed[i] < 240 else "unsure"
+        for i, name in enumerate(request.schema["properties"])
+    }
+    text = json.dumps(answers)
+    return LLMResult(request.key, Status.OK, text, _usage_for(request, text))
+
+
 def demo_responder(request: LLMRequest) -> LLMResult:
     """Deterministic and roughly plausible: usually option 1, sometimes another, sometimes none."""
     if request.purpose == "attributes":
         return demo_attributes(request)
+    if request.purpose == "judge":
+        return demo_judge(request)
     numbered = re.findall(r"^(\d+)\. ", request.user, flags=re.MULTILINE)
     n_options = len(numbered)
     seed = hashlib.sha256(f"{request.user}|{request.config.vendor}".encode()).digest()

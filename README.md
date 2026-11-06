@@ -96,6 +96,27 @@ make tasks-check
 Tasks are drafted from hand labels and listing prices only. Each request is written by hand, in a
 shopper's words, and each task is hand-checked.
 
+### Judging products outside the gold set
+
+Agents can return correct products that have no hand label. Those are judged rather than left out,
+with pooled judging: every non-gold product any condition returns for a task is collected once, and
+checked against the task's constraints. Price is checked in code. Category and attribute
+constraints go to an LLM judge that sees only the raw listing and image, never a catalog's
+enrichment, so no condition is judged on its own data.
+
+```bash
+make judge-price
+make judge-sample
+make judge-review
+make judge-agreement
+make judge-pool
+```
+
+The judge is used only if it agrees with hand judgments on a seeded sample of 50 pairs: at least
+90%, with no more than 5 of them unsure. Agreement is also reported per condition. Every pair the
+judge is unsure of goes to hand review, and scoring waits for them. `make judge-price` estimates the
+cost before anything is sent, and the other commands spend within the same caps as labeling.
+
 ## Catalog search
 
 A Rust engine on tantivy, behind a local MCP server that exposes one tool, `search_catalog`. It takes

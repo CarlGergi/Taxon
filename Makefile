@@ -1,5 +1,6 @@
 .PHONY: setup test lint reproduce clean backup gold label-fake label-dry-run label-first \
-	label-gold-pool label-attributes tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu
+	label-gold-pool label-attributes tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu \
+	judge-price judge-sample judge-review judge-agreement judge-pool
 
 TARGET ?= 200
 TASKS ?= 100
@@ -8,6 +9,7 @@ CATALOG ?= raw
 RUN ?= qwen-lora
 PRODUCTS ?= 2000
 STEPS ?= 2000
+RUNS ?= data/bench/runs.jsonl
 
 # Homebrew's rustup keeps cargo off PATH, so ask rustup where this repository's toolchain is. The
 # full path is needed because make 3.81 ignores its own PATH when it looks up a command.
@@ -76,6 +78,14 @@ tasks-review:
 
 tasks-check:
 	uv run python -m taxon.bench check --need $(TASKS)
+
+# Pooled judging of what agents return. RUNS is the agents' output: condition, run, task, returned.
+# judge-price spends nothing. The rest spend within the caps, and judge-pool waits for agreement.
+judge-price judge-sample judge-pool:
+	uv run python -m taxon.bench $@ --runs "$(RUNS)"
+
+judge-review judge-agreement:
+	uv run python -m taxon.bench $@ --runs "$(RUNS)"
 
 # The catalog search engine. An enriched catalog takes CATALOG=name ENRICHMENTS=path.
 search-index:

@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from taxon.bench import search
+from taxon.bench import judging, search
 from taxon.bench.catalog import build_catalog
 from taxon.bench.tasks import (
     FIRST_TASK_COUNT,
@@ -27,6 +27,13 @@ from taxon.products import read_jsonl
 from taxon.taxonomy import Taxonomy
 
 TASKS_PATH = DATA_DIR / "bench" / "tasks.jsonl"
+JUDGE_COMMANDS = {
+    "judge-price": "price judging the validation sample and the whole pool, spending nothing",
+    "judge-sample": "judge the 50-pair validation sample",
+    "judge-review": "hand-judge the validation sample, then what the judge was unsure of",
+    "judge-agreement": "compare the judge with hand judgments",
+    "judge-pool": "judge every pooled pair, once the judge is trusted",
+}
 
 
 def _inputs(labels_path: Path, derived: Path):
@@ -45,6 +52,9 @@ def main(
     tasks_path: Path = TASKS_PATH,
     labels_path: Path = LABELS_PATH,
     derived: Path = DERIVED_DIR,
+    judging_dir: Path | None = None,
+    labeling_dir: Path | None = None,
+    read=input,
 ) -> int:
     parser = argparse.ArgumentParser(prog="python -m taxon.bench", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -59,6 +69,10 @@ def main(
     query = commands.add_parser("search", help="run one search_catalog request, given as JSON")
     query.add_argument("request", type=json.loads)
     query.add_argument("--name", default=search.RAW)
+    for name, text in JUDGE_COMMANDS.items():
+        judge = commands.add_parser(name, help=text)
+        judge.add_argument("--runs", type=Path, help="JSONL of condition, run, task, returned")
+        judge.add_argument("--fake", action="store_true")
     args = parser.parse_args(argv)
 
     if args.command == "search-index":
@@ -77,6 +91,22 @@ def main(
 
     taxonomy, by_asin, items, training_ids = _inputs(labels_path, derived)
     existing = load_tasks(tasks_path) if tasks_path.exists() else []
+    if args.command in JUDGE_COMMANDS:
+        root = judging_dir or judging.JUDGING_DIR
+        labeling = labeling_dir or DATA_DIR / ("labeling_fake" if args.fake else "labeling")
+        report = judging.run(
+            args.command,
+            judging.Judging(root, labeling),
+            existing,
+            by_asin,
+            {item.asin for item in items},
+            args.runs,
+            args.fake,
+            read,
+            print,
+        )
+        print(json.dumps(report, indent=2))
+        return 0
     if args.command == "draft":
         tasks = merge_drafts(existing, draft_tasks(items, args.n, SEED))
         save_tasks(tasks_path, tasks)
