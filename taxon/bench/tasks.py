@@ -87,7 +87,7 @@ def _signature(constraints: Iterable[Constraint]) -> tuple[str, ...]:
     return tuple(sorted(str(c.signature()) for c in constraints))
 
 
-def _numeric_price(value: object) -> float | None:
+def numeric_price(value: object) -> float | None:
     if isinstance(value, int | float) and not isinstance(value, bool) and value > 0:
         return float(value)
     return None
@@ -96,7 +96,7 @@ def _numeric_price(value: object) -> float | None:
 def gold_items(labels: Mapping[str, dict], products: Mapping[str, dict]) -> list[GoldItem]:
     """Join hand labels with listing prices. Prices that are not plain numbers count as absent."""
     return [
-        GoldItem(asin, row["path"], row["attributes"], _numeric_price(products[asin].get("price")))
+        GoldItem(asin, row["path"], row["attributes"], numeric_price(products[asin].get("price")))
         for asin, row in sorted(labels.items())
     ]
 

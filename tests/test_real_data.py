@@ -7,6 +7,7 @@ import pytest
 from tokenizers import Tokenizer
 
 from taxon.baseline import C_GRID
+from taxon.bench import search
 from taxon.fetch import fetch
 from taxon.gold.pool import FIRST_TARGET, GOLD_POOL_SIZE, assert_disjoint, training_products
 from taxon.pins import (
@@ -199,6 +200,40 @@ def test_the_regularization_search_found_an_interior_optimum():
     assert result["best_c"] != C_GRID[-1], "best C is at the edge of the grid; extend it"
 
 
+def test_the_raw_catalog_covers_the_sample_and_carries_no_labels(products):
+    rows = read_jsonl(DERIVED_DIR / "catalogs" / "raw.jsonl")
+    assert sorted(row["id"] for row in rows) == sorted(p["parent_asin"] for p in products)
+    allowed = {"id", "title", "store", "features", "description", "details", "price"}
+    assert all(set(row) == allowed for row in rows)
+    assert not any("Best Sellers Rank" in row["details"] for row in rows)
+
+
+def test_the_raw_index_holds_the_catalog_and_no_enrichment():
+    report = json.loads((RESULTS_DIR / "search.json").read_text(encoding="utf-8"))
+    assert report["index"]["documents"] == N_PRODUCTS
+    assert not report["index"]["has_category"]
+    assert not report["index"]["has_attributes"]
+
+
+def test_searching_an_exact_title_finds_that_product():
+    report = json.loads((RESULTS_DIR / "search.json").read_text(encoding="utf-8"))
+    assert report["self_retrieval"]["sample"] == search.SELF_RETRIEVAL_SAMPLE
+    assert report["self_retrieval"]["found_in_top_10"] >= 0.98
+
+
+def test_the_real_index_applies_a_price_filter_and_reports_the_others():
+    index = search.index_dir(search.RAW, DERIVED_DIR)
+    requests = [
+        {"query": "chef knife", "min_price": 10, "max_price": 50, "limit": 50},
+        {"query": "chef knife", "category": "Home & Garden", "attributes": {"color": "Red"}},
+    ]
+    priced, unavailable = search.search_many(index, requests, search.build_binary())
+    assert priced["results"]
+    assert all(10 <= hit["price"] <= 50 for hit in priced["results"])
+    assert unavailable["ignored_filters"] == ["category", "attributes"]
+    assert unavailable["results"]
+
+
 def test_the_readme_reports_the_current_results():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     result = json.loads((RESULTS_DIR / "baseline.json").read_text(encoding="utf-8"))
@@ -237,5 +272,10 @@ def test_the_readme_reports_the_current_results():
         )
     trie = json.loads((RESULTS_DIR / "trie.json").read_text(encoding="utf-8"))
     expected.append(f"| {trie['states']:,} | {trie['mean_tokens']:.1f} | {trie['max_tokens']} |")
+    found = json.loads((RESULTS_DIR / "search.json").read_text(encoding="utf-8"))["self_retrieval"]
+    expected.append(
+        f"| {found['sample']} | {percent(found['found_first'])} | "
+        f"{percent(found['found_in_top_10'])} |"
+    )
     missing = [line for line in expected if line not in readme]
     assert not missing, f"README is out of date: {missing}"

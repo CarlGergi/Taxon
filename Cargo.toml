@@ -1,0 +1,7 @@
+[workspace]
+members = ["search"]
+resolver = "3"
+
+[profile.release]
+# The default strip step calls rust-objcopy, which cannot find LLVM in this toolchain.
+strip = false

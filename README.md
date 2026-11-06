@@ -11,11 +11,12 @@ raw one.
 
 Milestone 1 is complete. Milestone 2's code is built and tested against fake vendors. The labeling
 run, the gold set and the benchmark tasks are still to come, so nothing below measures real
-annotator labels.
+annotator labels. The search side of milestone 5 is built and tested on the raw catalog.
 
 ## Running it
 
-You need [uv](https://docs.astral.sh/uv/). Every input is pinned to an exact version and checksum.
+You need [uv](https://docs.astral.sh/uv/) and [rustup](https://rustup.rs), which installs the Rust
+version pinned in `rust-toolchain.toml`. Every input is pinned to an exact version and checksum.
 
 ```bash
 make setup
@@ -84,6 +85,34 @@ make tasks-check
 
 Tasks are drafted from hand labels and listing prices only. Each request is written by hand, in a
 shopper's words, and each task is hand-checked.
+
+## Catalog search
+
+A Rust engine on tantivy, behind a local MCP server that exposes one tool, `search_catalog`. It takes
+keywords plus optional category, attribute and price filters. The tool has the same schema on every
+catalog, so the data is the only thing that changes between benchmark conditions.
+
+```bash
+make search-index
+make search REQUEST='{"query": "red chef knife", "max_price": 50}'
+make search-serve
+```
+
+The raw catalog holds listings without Amazon's category fields. Two choices keep the comparison
+fair, and both make the raw baseline harder to beat:
+
+- A category or attribute filter on the raw catalog is not applied. It is named in `ignored_filters`,
+  and keyword results still come back. Returning nothing instead would cost the raw condition an extra
+  tool call on every task.
+- The price filter works on the raw catalog, because price is part of the listing.
+
+An enriched catalog is the same listings plus `category` and `attributes`, keeping only values the
+taxonomy allows:
+
+```bash
+make search-index CATALOG=model ENRICHMENTS=enrichments.jsonl
+make search-serve CATALOG=model
+```
 
 ## Results
 
@@ -158,6 +187,15 @@ Validation accuracy is still rising with more training data:
 | 972 | 35.9% |
 | 1,945 | 44.1% |
 | 3,891 | 48.3% |
+
+### Catalog search
+
+Searching for a product's exact title over MCP, on the raw catalog of 10,000 products. This checks that
+the engine and catalog work together, not how well an agent shops.
+
+| Products searched | Found first | Found in top 10 |
+| --- | --- | --- |
+| 500 | 99.6% | 99.8% |
 
 ## Data and model licences
 

@@ -15,6 +15,8 @@ from tokenizers import Tokenizer
 
 from eval.metrics import evaluate
 from taxon.baseline import TfidfLogisticRegression, run_baseline
+from taxon.bench import search
+from taxon.bench.catalog import raw_catalog
 from taxon.fetch import cached_range, fetch
 from taxon.gold.pool import (
     FIRST_TARGET,
@@ -175,6 +177,19 @@ def gold_report(
     return report
 
 
+def search_report(products: list[dict], derived: Path = DERIVED_DIR) -> dict:
+    """Index the raw catalog and check the engine over MCP. Uses no labels and no model."""
+    rows = raw_catalog(products)
+    manifest = search.index_catalog(rows, search.RAW, derived)
+    path = search.catalog_path(search.RAW, derived)
+    return {
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "with_price": sum(row["price"] is not None for row in rows),
+        "index": manifest,
+        "self_retrieval": search.self_retrieval(rows, search.index_dir(search.RAW, derived), SEED),
+    }
+
+
 def main() -> None:
     taxonomy = Taxonomy.load(fetch(TAXONOMY))
     write_result("taxonomy", taxonomy_summary(taxonomy))
@@ -220,6 +235,8 @@ def main() -> None:
         DERIVED_DIR / "gold_suggestions.jsonl",
         build_gold_suggestions(products, queue, labels, c),
     )
+
+    write_result("search", search_report(products))
 
     report = gold_report(products, taxonomy, queue, labels, shortlists, c)
     if report is None:
