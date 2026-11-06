@@ -52,7 +52,9 @@ refuse to start without it. `make label-first` labels 2,000 products. Whether to
 decided from the learning curve at milestone 3. The gold-pool stage exists only to score the
 pipeline against hand labels, and its output never reaches training.
 
-Hand labels and paid responses are not in git, so keep a copy of them outside the repository:
+Hand labels and paid responses are not in git. This zips them, along with anything listed in
+`.git/info/exclude`, into iCloud Drive. Set `BACKUP_DIR` to use another folder. Keys are never
+included.
 
 ```bash
 make backup

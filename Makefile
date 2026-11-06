@@ -3,7 +3,7 @@
 
 TARGET ?= 200
 TASKS ?= 100
-BACKUP_DIR ?= $(HOME)/taxon-backups
+BACKUP_DIR ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/taxon-backups
 
 setup:
 	uv sync
@@ -24,7 +24,7 @@ reproduce:
 clean:
 	rm -rf results data/derived
 
-# Copy hand labels and paid responses into a zip outside the repository.
+# Zip what git does not hold into iCloud Drive, so it survives losing this disk.
 backup:
 	uv run python -m taxon.backup --dir "$(BACKUP_DIR)"
 

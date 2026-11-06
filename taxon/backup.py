@@ -1,7 +1,8 @@
-"""Copy hand labels and paid responses into a zip outside the repository.
+"""Copy what git does not hold into a zip on iCloud Drive, so it survives losing this disk.
 
-Neither is in git, and both would cost time or money to replace. The spending ledger comes along
+Hand labels and paid responses would cost time or money to replace. The spending ledger comes along
 so that restored responses keep counting toward the caps, and so do hand-written benchmark tasks.
+Files listed in .git/info/exclude are private to this checkout, so nothing else has a copy of them.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from pathlib import Path
 
 from taxon.pins import DATA_DIR, ROOT
 
-DEFAULT_DIR = Path.home() / "taxon-backups"
+DEFAULT_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/taxon-backups"
 SOURCES = (
     DATA_DIR / "gold",
     DATA_DIR / "bench",
@@ -23,6 +24,22 @@ SOURCES = (
     DATA_DIR / "labeling" / "ledger.jsonl",
 )
 _NEVER = {".env"}
+
+
+def locally_excluded(root: Path = ROOT) -> list[Path]:
+    """The plain paths in .git/info/exclude. Glob patterns and paths outside `root` are skipped."""
+    exclude = root / ".git" / "info" / "exclude"
+    if not exclude.is_file():
+        return []
+    found = []
+    for line in exclude.read_text(encoding="utf-8").splitlines():
+        entry = line.strip().rstrip("/")
+        if not entry or entry.startswith(("#", "!")) or any(c in entry for c in "*?["):
+            continue
+        path = root / entry.lstrip("/")
+        if path.resolve().is_relative_to(root.resolve()):
+            found.append(path)
+    return found
 
 
 def _files_under(sources: Iterable[Path]) -> list[Path]:
@@ -37,7 +54,7 @@ def _files_under(sources: Iterable[Path]) -> list[Path]:
 
 def create_backup(
     destination: Path,
-    sources: Iterable[Path] = SOURCES,
+    sources: Iterable[Path] | None = None,
     root: Path = ROOT,
     now: datetime | None = None,
 ) -> Path | None:
@@ -49,7 +66,7 @@ def create_backup(
     destination = destination.expanduser().resolve()
     if destination.is_relative_to(root.resolve()):
         raise ValueError(f"a backup must go outside the repository, not in {destination}")
-    files = _files_under(sources)
+    files = _files_under([*SOURCES, *locally_excluded(root)] if sources is None else sources)
     if not files:
         return None
     destination.mkdir(parents=True, exist_ok=True)
@@ -74,9 +91,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m taxon.backup", description=__doc__)
     parser.add_argument("--dir", type=Path, default=DEFAULT_DIR)
     args = parser.parse_args(argv)
+    if args.dir == DEFAULT_DIR and not DEFAULT_DIR.parent.is_dir():
+        # Creating this path would look like a backup but never sync anywhere.
+        print(f"iCloud Drive is not at {DEFAULT_DIR.parent}. Set BACKUP_DIR to choose a folder.")
+        return 2
     target = create_backup(args.dir)
     if target is None:
-        print("Nothing to back up yet: no hand labels or paid responses.")
+        print("Nothing to back up yet.")
     else:
         with zipfile.ZipFile(target) as archive:
             print(f"Backed up {len(archive.namelist())} files to {target}")

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from taxon import backup
-from taxon.backup import create_backup
+from taxon.backup import create_backup, locally_excluded
 from taxon.pins import ROOT
 
 
@@ -82,6 +82,40 @@ def test_no_partial_file_is_left_behind(repo, tmp_path):
     assert [p.suffix for p in (tmp_path / "out").iterdir()] == [".zip"]
 
 
+def excluded_repo(tmp_path, lines):
+    root = tmp_path / "repo"
+    (root / ".git" / "info").mkdir(parents=True)
+    (root / ".git" / "info" / "exclude").write_text(lines)
+    return root
+
+
+def test_locally_excluded_reads_plain_paths_and_skips_the_rest(tmp_path):
+    root = excluded_repo(
+        tmp_path, "# a comment\n\nprivate.md\n.scratch/\n/rooted.txt\n*.log\n!keep\n../outside\n"
+    )
+    assert locally_excluded(root) == [root / "private.md", root / ".scratch", root / "rooted.txt"]
+
+
+def test_locally_excluded_is_empty_without_a_git_folder(tmp_path):
+    assert locally_excluded(tmp_path) == []
+
+
+def test_files_that_only_this_checkout_has_go_in_by_default(tmp_path):
+    root = excluded_repo(tmp_path, "private.md\n.scratch/\nmissing.md\n")
+    (root / "private.md").write_text("rules")
+    (root / ".scratch").mkdir()
+    (root / ".scratch" / "notes.md").write_text("notes")
+    (root / ".scratch" / ".env").write_text("OPENAI_API_KEY=secret")
+    target = create_backup(tmp_path / "out", root=root)
+    assert names(target) == {"private.md", ".scratch/notes.md"}
+
+
+def test_an_explicit_source_list_is_used_as_given(tmp_path):
+    root = excluded_repo(tmp_path, "private.md\n")
+    (root / "private.md").write_text("rules")
+    assert create_backup(tmp_path / "out", [], root) is None
+
+
 def test_the_default_sources_cover_gold_and_the_response_cache():
     relative = {str(p.relative_to(ROOT)) for p in backup.SOURCES}
     assert {"data/gold", "data/labeling/responses"} <= relative
@@ -90,6 +124,21 @@ def test_the_default_sources_cover_gold_and_the_response_cache():
 
 def test_the_default_destination_is_outside_the_repository():
     assert not backup.DEFAULT_DIR.resolve().is_relative_to(ROOT.resolve())
+
+
+def test_the_default_destination_is_icloud_drive():
+    assert backup.DEFAULT_DIR.parent.name == "com~apple~CloudDocs"
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    assert "BACKUP_DIR ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/" in makefile
+    assert '--dir "$(BACKUP_DIR)"' in makefile
+
+
+def test_a_missing_icloud_drive_stops_rather_than_faking_a_backup(monkeypatch, tmp_path, capsys):
+    default = tmp_path / "Library" / "CloudDocs" / "taxon-backups"
+    monkeypatch.setattr(backup, "DEFAULT_DIR", default)
+    assert backup.main(["--dir", str(default)]) == 2
+    assert "BACKUP_DIR" in capsys.readouterr().out
+    assert not default.parent.exists()
 
 
 def test_paid_responses_cannot_be_committed_by_accident():
