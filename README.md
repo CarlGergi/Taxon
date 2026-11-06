@@ -11,7 +11,9 @@ raw one.
 
 Milestone 1 is complete. Milestone 2's code is built and tested against fake vendors. The labeling
 run, the gold set and the benchmark tasks are still to come, so nothing below measures real
-annotator labels. The search side of milestone 5 is built and tested on the raw catalog.
+annotator labels. The search side of milestone 5 is built and tested on the raw catalog. Milestone 3's
+training pipeline is built and tested on CPU with tiny random weights, so no model has been trained
+for real yet.
 
 ## Running it
 
@@ -113,6 +115,26 @@ taxonomy allows:
 make search-index CATALOG=model ENRICHMENTS=enrichments.jsonl
 make search-serve CATALOG=model
 ```
+
+## Fine-tuning
+
+Each training example asks for a random subset of a product's fields, so the model learns to return
+whatever is requested. Sometimes that includes an attribute the category cannot have, whose answer is
+null. Two metrics check this, and neither needs labels:
+
+- **Field compliance:** how often the model outputs only the requested fields.
+- **Field invariance:** how often a field's answer stays the same when the rest of the requested schema
+  changes.
+
+```bash
+make train-tiny
+make train-gpu RUN=name PRODUCTS=2000 STEPS=2000
+```
+
+`make train-tiny` runs on CPU with tiny random weights and provisional labels. It shows the pipeline
+works, and its numbers are not results. `make train-gpu` fine-tunes the real model with LoRA, needs a
+GPU, and refuses provisional labels. Accuracy is only ever computed against hand labels, with
+`python -m taxon.training evaluate --on gold`.
 
 ## Results
 

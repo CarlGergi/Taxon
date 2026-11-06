@@ -1,10 +1,13 @@
 .PHONY: setup test lint reproduce clean backup gold label-fake label-dry-run label-first \
-	label-gold-pool tasks-draft tasks-review tasks-check search-index search search-serve
+	label-gold-pool tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu
 
 TARGET ?= 200
 TASKS ?= 100
 BACKUP_DIR ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/taxon-backups
 CATALOG ?= raw
+RUN ?= qwen-lora
+PRODUCTS ?= 2000
+STEPS ?= 2000
 
 # Homebrew's rustup keeps cargo off PATH, so ask rustup where this repository's toolchain is. The
 # full path is needed because make 3.81 ignores its own PATH when it looks up a command.
@@ -82,3 +85,13 @@ search:
 search-serve:
 	@target/release/taxon-search serve --index data/derived/search/$(CATALOG)
 
+# Fine-tuning on CPU with tiny random weights and provisional labels. This only shows the pipeline
+# runs: its numbers are not results.
+train-tiny:
+	uv run python -m taxon.training train
+	uv run python -m taxon.training evaluate
+
+# The real model on a rented GPU, with labels from the labeling pipeline.
+train-gpu:
+	uv run python -m taxon.training train --gpu --labels pipeline --name $(RUN) --products $(PRODUCTS) \
+		--max-steps $(STEPS)

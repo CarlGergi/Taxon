@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from functools import lru_cache
 
 from taxon.gold.store import GoldStore
-from taxon.silver import singular_words
+from taxon.silver import singular_words, stated_attributes
 from taxon.taxonomy import SEPARATOR, Taxonomy, split_path
 
 SEARCH_LIMIT = 15
@@ -112,25 +112,11 @@ class GoldApp:
     def _build_sorted_values(self, attribute_id: str) -> tuple[str, ...]:
         return tuple(sorted(self.taxonomy.attributes[attribute_id].values, key=str.casefold))
 
-    def _prefill(self, details: Mapping, path: str) -> dict[str, str]:
-        """Attribute values the listing's own details state exactly, ready to confirm."""
-        stated = {str(k).strip().casefold(): str(v).strip().casefold() for k, v in details.items()}
-        prefilled = {}
-        for handle, attribute_id in self.taxonomy.category(path).attribute_ids:
-            wanted = stated.get(handle.replace("-", " "))
-            if wanted is None:
-                continue
-            for value in self._sorted_values(attribute_id):
-                if value.casefold() == wanted:
-                    prefilled[handle] = value
-                    break
-        return prefilled
-
     def node(self, path: str, asin: str | None = None) -> dict:
         category = self.taxonomy.category(path)
         parts = split_path(path)
         details = self.products[asin]["details"] if asin in self.products else {}
-        prefilled = self._prefill(details, path)
+        prefilled = stated_attributes(details, path, self.taxonomy)
         return {
             "path": path,
             "parent": SEPARATOR.join(parts[:-1]) or None,

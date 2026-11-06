@@ -1,7 +1,14 @@
 import pytest
 from conftest import category
 
-from taxon.silver import DOMAIN_VERTICALS, SilverLabeler, coverage, label_products, tokens
+from taxon.silver import (
+    DOMAIN_VERTICALS,
+    SilverLabeler,
+    coverage,
+    label_products,
+    stated_attributes,
+    tokens,
+)
 from taxon.taxonomy import Taxonomy
 
 
@@ -176,3 +183,23 @@ def test_a_multi_item_breadcrumb_may_still_match_a_shallow_node(monkeypatch):
     assert labeler.label("D", ["Home Garden"]) is None
     assert labeler.label("D", ["Home Goods Plants"]) is None
     assert labeler.label("D", ["Plants", "Home Plants"]) == "Home > Plants"
+
+
+def test_stated_attributes_keep_exact_matches_in_the_taxonomy_spelling(taxonomy):
+    details = {"Color": " red ", "Material": "COTTON", "Brand": "Acme"}
+    found = stated_attributes(details, "Apparel > Bags > Totes", taxonomy)
+    assert found == {"color": "Red", "material": "Cotton"}
+
+
+def test_stated_attributes_skip_values_the_taxonomy_does_not_allow(taxonomy):
+    assert stated_attributes({"Color": "Reddish"}, "Apparel > Bags > Totes", taxonomy) == {}
+
+
+def test_stated_attributes_skip_attributes_the_category_does_not_have(taxonomy):
+    assert stated_attributes({"Color": "Red"}, "Home > Kitchen", taxonomy) == {}
+
+
+def test_stated_attributes_match_a_handle_written_with_spaces(taxonomy):
+    found = stated_attributes({"Strap Color": "Blue"}, "Apparel > Bags", taxonomy)
+    assert found == {"strap-color": "Blue"}
+

@@ -39,9 +39,10 @@ def _hf_tokenizer(model: str, revision: str, sha256: str) -> PinnedFile:
 # The main model is Qwen3.5-2B. Qwen3.5-4B shares this vocabulary and merge table, so the same trie
 # serves it if GRPO fits in memory at milestone 3.
 MODEL = "Qwen/Qwen3.5-2B"
+MODEL_REVISION = "15852e8c16360a2fea060d615a32b45270f8a8fc"
 TOKENIZER = _hf_tokenizer(
     MODEL,
-    "15852e8c16360a2fea060d615a32b45270f8a8fc",
+    MODEL_REVISION,
     "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42",
 )
 

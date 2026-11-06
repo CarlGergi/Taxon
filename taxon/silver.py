@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import defaultdict
+from collections.abc import Mapping
 
 from taxon.taxonomy import SEPARATOR, Taxonomy, split_path
 
@@ -192,3 +193,17 @@ def coverage(products: list[dict], labels: list[dict]) -> dict:
         "distinct_paths": len({row["path"] for row in labels if row["path"]}),
         "per_domain_coverage": {d: h / n for d, (h, n) in sorted(per_domain.items())},
     }
+
+
+def stated_attributes(details: Mapping, path: str, taxonomy: Taxonomy) -> dict[str, str]:
+    """Attribute values a listing's details state exactly, spelled as the taxonomy spells them."""
+    stated = {str(k).strip().casefold(): str(v).strip().casefold() for k, v in details.items()}
+    found = {}
+    for handle, values in taxonomy.allowed_values(path).items():
+        wanted = stated.get(handle.replace("-", " "))
+        if wanted is None:
+            continue
+        matches = [value for value in values if value.casefold() == wanted]
+        if matches:
+            found[handle] = min(matches, key=lambda value: (value.casefold(), value))
+    return found

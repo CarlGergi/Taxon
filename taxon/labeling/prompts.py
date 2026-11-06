@@ -44,7 +44,7 @@ def stable_prefix(taxonomy: Taxonomy) -> str:
     return _INSTRUCTIONS + "\n".join(outline) + "\n"
 
 
-def _product_block(product: dict) -> str:
+def product_block(product: dict) -> str:
     def clean(text: object, limit: int) -> str:
         return str(text)[:limit].replace("</product>", "")
 
@@ -71,7 +71,7 @@ def pick_request(
 ) -> LLMRequest:
     """Choose among retrieved paths, listed alphabetically so rank cannot sway the choice."""
     user = (
-        f"{_product_block(product)}\n\nOptions:\n{_numbered(sorted(candidates))}\n\n"
+        f"{product_block(product)}\n\nOptions:\n{_numbered(sorted(candidates))}\n\n"
         "Choose the best option. Answer 0 if none of them fits."
     )
     return _request(config, "pick", system, user, image)
@@ -93,7 +93,7 @@ def walk_request(
         else "Answer 0 if it fits none of them."
     )
     user = (
-        f"{_product_block(product)}\n\n{place}\n\nOptions:\n{_numbered(children)}\n\n"
+        f"{product_block(product)}\n\n{place}\n\nOptions:\n{_numbered(children)}\n\n"
         f"Choose the option that contains this product. {stop}"
     )
     return _request(config, "walk", system, user, image)
@@ -104,7 +104,7 @@ def arbitrate_request(
 ) -> LLMRequest:
     """Settle a disagreement. Proposals carry no annotator names, and may be declined."""
     user = (
-        f"{_product_block(product)}\n\nIndependent annotators disagreed. Their proposals:\n"
+        f"{product_block(product)}\n\nIndependent annotators disagreed. Their proposals:\n"
         f"{_numbered(sorted(proposals))}\n\n"
         "Choose the proposal that is correct. Answer 0 to abstain if none is clearly correct."
     )
