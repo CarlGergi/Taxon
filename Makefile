@@ -1,5 +1,5 @@
 .PHONY: setup test lint reproduce clean backup gold label-fake label-dry-run label-first \
-	label-gold-pool tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu
+	label-gold-pool label-attributes tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu
 
 TARGET ?= 200
 TASKS ?= 100
@@ -63,6 +63,10 @@ label-first:
 
 label-gold-pool:
 	uv run python -m taxon.labeling run --gold-pool
+
+# Attributes for the labeled training products, once the pass has a score against hand labels.
+label-attributes:
+	uv run python -m taxon.labeling run --attributes
 
 tasks-draft:
 	uv run python -m taxon.bench draft --n $(TASKS)

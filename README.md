@@ -55,6 +55,14 @@ refuse to start without it. `make label-first` labels 2,000 products. Whether to
 decided from the learning curve at milestone 3. The gold-pool stage exists only to score the
 pipeline against hand labels, and its output never reaches training.
 
+Attributes come from a separate second pass, never from the category calls. Once a product's
+category is settled, by agreement or by the arbitrator, one cheap annotator with the image fills in
+that category's attributes in one call. The taxonomy's value lists are too long to send, so answers
+are kept only when they match an allowed value exactly. The dry run prices this pass, the gold-pool
+stage runs it so it can be scored against hand-labeled attributes, and only then does
+`make label-attributes` run it on the labeled training products. Category responses are cached,
+so adding the pass later pays only for the new calls. `make label-first` stays category-only.
+
 Hand labels and paid responses are not in git. This zips them, along with anything listed in
 `.git/info/exclude`, into iCloud Drive. Set `BACKUP_DIR` to use another folder. Keys are never
 included.

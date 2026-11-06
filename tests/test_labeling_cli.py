@@ -177,10 +177,11 @@ def test_a_rerun_of_the_same_stage_spends_nothing_more(tmp_path, inputs):
 
 
 def test_the_annotators_are_used_in_the_cli_labeler(tmp_path, taxonomy):
-    labeler, runner, tracer = cli._build_labeler(
+    labeler, extractor, runner, tracer = cli._build_labeler(
         taxonomy, cli.Workspace(tmp_path), True, Secrets({})
     )
     assert labeler.annotators == ANNOTATORS
+    assert extractor.runner is runner
     assert tracer is None
     assert runner.budget.caps == cli.CAPS
 

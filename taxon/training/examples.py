@@ -75,9 +75,11 @@ def load_labeled(
 ) -> list[LabeledProduct]:
     """Labeled products in `split`, in seeded order, never from the gold pool.
 
-    Attribute values come from what a listing's own details state exactly.
+    Attribute values come from the attribute pass when it has run, and otherwise from what a
+    listing's own details state exactly.
     """
-    labels = {row["parent_asin"]: row["path"] for row in read_jsonl(source.path)}
+    rows = {row["parent_asin"]: row for row in read_jsonl(source.path)}
+    labels = {asin: row["path"] for asin, row in rows.items()}
     usable = [
         p
         for p in training_products(products, gold_queue)
@@ -86,14 +88,13 @@ def load_labeled(
     usable.sort(key=lambda p: seeded_hash(seed, f"training|{p['parent_asin']}"))
     chosen = usable[:limit]
     assert_disjoint((p["parent_asin"] for p in chosen), gold_queue)
-    return [
-        LabeledProduct(
-            p,
-            labels[p["parent_asin"]],
-            stated_attributes(p["details"], labels[p["parent_asin"]], taxonomy),
-        )
-        for p in chosen
-    ]
+    def attributes(product: Mapping) -> dict[str, str]:
+        row = rows[product["parent_asin"]]
+        if "attributes" in row:
+            return dict(row["attributes"])
+        return stated_attributes(product["details"], row["path"], taxonomy)
+
+    return [LabeledProduct(p, labels[p["parent_asin"]], attributes(p)) for p in chosen]
 
 
 def field_vocabulary(items: Sequence[LabeledProduct]) -> list[str]:

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from tokenizers import Tokenizer
 
+from eval.fields import attribute_accuracy
 from eval.metrics import evaluate
 from taxon.baseline import TfidfLogisticRegression, run_baseline
 from taxon.bench import search
@@ -43,7 +44,7 @@ from taxon.pins import (
     amazon_url,
 )
 from taxon.products import read_candidates, read_jsonl, select, summarize, write_jsonl
-from taxon.silver import coverage, label_products
+from taxon.silver import coverage, label_products, stated_attributes
 from taxon.taxonomy import Taxonomy
 from taxon.trie import TokenTrie
 
@@ -130,6 +131,28 @@ def retrieval_report(
     }
 
 
+def attribute_pass_score(
+    rows: dict[str, dict], gold: dict[str, dict], products: dict[str, dict], taxonomy: Taxonomy
+) -> dict | None:
+    """The attribute pass against hand-labeled attribute values, beside the free alternative of
+    taking only what a listing's details state. None until some hand label has attributes."""
+    asins = [
+        a for a in sorted(gold) if gold[a]["attributes"] and "attributes" in rows.get(a, {})
+    ]
+    if not asins:
+        return None
+    golds = [gold[a]["attributes"] for a in asins]
+    stated = [
+        stated_attributes(products[a]["details"], gold[a]["path"], taxonomy) for a in asins
+    ]
+    return {
+        "products": len(asins),
+        "same_category_as_hand_label": sum(rows[a]["path"] == gold[a]["path"] for a in asins),
+        "attribute_pass": attribute_accuracy(golds, [rows[a]["attributes"] for a in asins]),
+        "details_only": attribute_accuracy(golds, stated),
+    }
+
+
 def gold_report(
     products: list[dict],
     taxonomy: Taxonomy,
@@ -174,6 +197,9 @@ def gold_report(
         arbitration = arbitrator_score(list(rows.values()), {a: gold[a]["path"] for a in asins})
         if arbitration is not None:
             report["arbitration"] = arbitration
+        attributes = attribute_pass_score(rows, gold, by_asin, taxonomy)
+        if attributes is not None:
+            report["attribute_pass"] = attributes
     return report
 
 

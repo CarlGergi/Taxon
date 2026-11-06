@@ -15,6 +15,7 @@ CHOICE_SCHEMA = {
     "required": ["choice"],
     "additionalProperties": False,
 }
+_CHOICE_JSON = json.dumps(CHOICE_SCHEMA, sort_keys=True)
 
 
 class Status(StrEnum):
@@ -40,6 +41,13 @@ class LLMRequest:
     user: str
     image_path: str | None = None
     image_sha256: str | None = None
+    # The reply's JSON schema, kept as text so a request stays hashable. Requests that pick an
+    # option keep the original schema, so their cache keys are unchanged.
+    schema_json: str = _CHOICE_JSON
+
+    @property
+    def schema(self) -> dict:
+        return json.loads(self.schema_json)
 
     @cached_property
     def key(self) -> str:
@@ -49,7 +57,7 @@ class LLMRequest:
             self.config.model,
             self.config.max_tokens,
             self.config.effort,
-            CHOICE_SCHEMA,
+            self.schema,
             self.system,
             self.user,
             self.image_sha256,

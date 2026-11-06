@@ -22,8 +22,21 @@ def answer(request: LLMRequest, choice: int) -> LLMResult:
     return LLMResult(request.key, Status.OK, text, _usage_for(request, text))
 
 
+def demo_attributes(request: LLMRequest) -> LLMResult:
+    """Says Red for a color now and then, and null for everything else."""
+    seed = hashlib.sha256(request.user.encode()).digest()
+    values = {
+        handle: "Red" if handle == "color" and seed[0] < 128 else None
+        for handle in request.schema["properties"]
+    }
+    text = json.dumps(values)
+    return LLMResult(request.key, Status.OK, text, _usage_for(request, text))
+
+
 def demo_responder(request: LLMRequest) -> LLMResult:
     """Deterministic and roughly plausible: usually option 1, sometimes another, sometimes none."""
+    if request.purpose == "attributes":
+        return demo_attributes(request)
     numbered = re.findall(r"^(\d+)\. ", request.user, flags=re.MULTILINE)
     n_options = len(numbered)
     seed = hashlib.sha256(f"{request.user}|{request.config.vendor}".encode()).digest()

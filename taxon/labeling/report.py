@@ -187,3 +187,71 @@ def format_projection(report: dict) -> str:
                     f"${value['estimate']:.2f}, up to ${value['upper_95']:.2f}, {verdict}"
                 )
     return "\n".join(lines)
+
+
+def attribute_projection(
+    rows: list[dict],
+    targets: dict[str, int],
+    spent: dict[str, float],
+    category: dict,
+    vendor: str,
+    planned: str,
+) -> dict:
+    """What the attribute pass would cost, per product sampled, with a 95% upper bound.
+
+    It fits only if everything planned does: what is spent, the category calls for `planned`, and
+    the attribute pass for `planned`, all on this vendor's cap.
+    """
+    if len(rows) < 2:
+        raise ValueError("need at least two products to project cost")
+    costs = [row.get("attribute_cost", 0.0) for row in rows]
+    per_product = mean(costs)
+    upper = per_product + 1.96 * stdev(costs) / math.sqrt(len(costs))
+    entry = {
+        "vendor": vendor,
+        "per_product": per_product,
+        "sample_cost": sum(costs),
+        "called_for": sum("attribute_cost" in row for row in rows),
+        "cap": CAPS[vendor],
+        "spent": spent.get(vendor, 0.0),
+    }
+    for name, n in targets.items():
+        entry[name] = {"products": n, "estimate": per_product * n, "upper_95": upper * n}
+    total = entry["spent"] + category[vendor][planned]["upper_95"] + upper * targets[planned]
+    entry["everything_planned"] = {"upper_95": total, "fits_cap": total <= CAPS[vendor]}
+    return entry
+
+
+def format_attribute_projection(entry: dict) -> str:
+    lines = [
+        f"attribute pass ({entry['vendor']}): ${entry['sample_cost']:.4f} measured for "
+        f"{entry['called_for']} settled products, ${entry['per_product']:.5f} per product sampled"
+    ]
+    for name, value in entry.items():
+        if isinstance(value, dict) and "estimate" in value:
+            lines.append(
+                f"  {name} ({value['products']:,} products): ${value['estimate']:.2f}, "
+                f"up to ${value['upper_95']:.2f}"
+            )
+    planned = entry["everything_planned"]
+    verdict = "fits" if planned["fits_cap"] else "EXCEEDS CAP"
+    lines.append(
+        f"  categories and attributes for everything planned, with what is spent: up to "
+        f"${planned['upper_95']:.2f} of ${entry['cap']:.2f}, {verdict}"
+    )
+    return "\n".join(lines)
+
+
+def attribute_report(rows: list[dict]) -> dict:
+    """How the attribute pass went. Unmatched answers are values the taxonomy does not spell."""
+    called = [row for row in rows if "attribute_cost" in row]
+    statuses = Counter(row.get("attribute_status") for row in rows)
+    kept = sum(len(row.get("attributes", {})) for row in called)
+    unmatched = [u for row in called for u in row.get("attribute_unmatched", [])]
+    return {
+        "called": len(called),
+        "statuses": dict(sorted((str(k), v) for k, v in statuses.items())),
+        "values_per_product": _rate(kept, len(called)),
+        "unmatched_share": _rate(len(unmatched), kept + len(unmatched)),
+        "unmatched_examples": unmatched[:10],
+    }

@@ -11,23 +11,33 @@ from pathlib import Path
 
 from taxon.fetch import fetch
 from taxon.gold.pool import assert_disjoint, stratified_order, training_products
+from taxon.labeling.attributes import ATTRIBUTE_ANNOTATOR, AttributeExtractor
 from taxon.labeling.budget import CAPS, Budget, BudgetExceeded
 from taxon.labeling.cache import ResponseCache
 from taxon.labeling.env import MissingKey, Secrets, load_secrets
 from taxon.labeling.fakes import FakeBatchClient
 from taxon.labeling.images import ImageStore
 from taxon.labeling.pipeline import Labeler
-from taxon.labeling.report import agreement_report, cost_projection, format_projection
+from taxon.labeling.report import (
+    agreement_report,
+    attribute_projection,
+    attribute_report,
+    cost_projection,
+    format_attribute_projection,
+    format_projection,
+)
 from taxon.labeling.runner import BatchRunner
 from taxon.labeling.tracing import build_tracer
 from taxon.labeling.vendors import build_clients
-from taxon.pins import DATA_DIR, DERIVED_DIR, SEED, TAXONOMY
+from taxon.pins import DATA_DIR, DERIVED_DIR, RESULTS_DIR, SEED, TAXONOMY
 from taxon.products import read_jsonl, write_jsonl
 from taxon.taxonomy import Taxonomy
 
 DRY_RUN_PRODUCTS = 100
 FIRST_RUN_PRODUCTS = 2_000
 EXIT_BUDGET = 3
+# Everything this milestone plans to label: the first run plus the gold pool.
+PLANNED = "first_run_and_gold_pool"
 EXIT_USAGE = 2
 
 
@@ -50,6 +60,8 @@ class Workspace:
         self.gold_rows = root / "gold_pool_labels.jsonl"
         self.results = root / "results"
         self.dry_run = self.results / "labeling_dry_run.json"
+        # Where make reproduce scores the attribute pass against hand labels.
+        self.gold_eval = RESULTS_DIR / "gold_eval.json"
 
     def write_result(self, path: Path, payload: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,13 +92,19 @@ def _build_labeler(taxonomy: Taxonomy, space: Workspace, fake: bool, secrets: Se
         image_for = ImageStore(space.images).image_for
     runner = BatchRunner(clients, ResponseCache(space.cache), budget, space.journal, tracer)
     args = {"image_for": image_for} if image_for else {}
-    return Labeler(taxonomy, runner, **args), runner, tracer
+    extractor = AttributeExtractor(taxonomy, runner, **args)
+    return Labeler(taxonomy, runner, **args), extractor, runner, tracer
 
 
 def export_training_labels(rows: list[dict], gold: list[str], path: Path) -> int:
     """Write labels usable for training. Refuses outright if a gold product is among them."""
     usable = [
-        {"parent_asin": r["parent_asin"], "path": r["path"], "source": r["source"]}
+        {
+            "parent_asin": r["parent_asin"],
+            "path": r["path"],
+            "source": r["source"],
+            **({"attributes": r["attributes"]} if "attributes" in r else {}),
+        }
         for r in rows
         if r["path"]
     ]
@@ -103,10 +121,11 @@ def dry_run(n: int, fake: bool, space: Workspace, secrets: Secrets) -> dict:
     taxonomy, products, gold, shortlists = _load_inputs()
     order = labeling_order(products, gold)
     sample = order[:n]
-    labeler, runner, tracer = _build_labeler(taxonomy, space, fake, secrets)
+    labeler, extractor, runner, tracer = _build_labeler(taxonomy, space, fake, secrets)
     if not fake:
         print(ImageStore(space.images).ensure_all(sample))
     rows = labeler.label(sample, shortlists)
+    extractor.extract(sample, rows)
     if tracer is not None:
         tracer.flush()
     targets = {
@@ -114,10 +133,21 @@ def dry_run(n: int, fake: bool, space: Workspace, secrets: Secrets) -> dict:
         "first_run_and_gold_pool": FIRST_RUN_PRODUCTS + len(gold),
         "all_training": len(order),
     }
+    spent = _spent(runner.budget)
+    cost = cost_projection(rows, targets, spent)
+    attribute_targets = {
+        "gold_pool": len(gold),
+        "first_run": FIRST_RUN_PRODUCTS,
+        "first_run_and_gold_pool": FIRST_RUN_PRODUCTS + len(gold),
+    }
     report = {
         "sample": n,
         "fake": fake,
-        "cost": cost_projection(rows, targets, _spent(runner.budget)),
+        "cost": cost,
+        "attribute_cost": attribute_projection(
+            rows, attribute_targets, spent, cost, ATTRIBUTE_ANNOTATOR.vendor, PLANNED
+        ),
+        "attributes": attribute_report(rows),
         "agreement": agreement_report(rows),
     }
     space.write_result(space.dry_run, report)
@@ -134,13 +164,62 @@ def _require_estimate(space: Workspace, stage: str) -> None:
         raise SystemExit(f"The dry run estimates this stage passes the cap for: {', '.join(over)}")
 
 
+def _require_attribute_estimate(space: Workspace) -> dict:
+    _require_estimate(space, "first_run_and_gold_pool")
+    estimate = json.loads(space.dry_run.read_text(encoding="utf-8"))
+    if "attribute_cost" not in estimate:
+        raise SystemExit("Rerun the dry run, so it prices the attribute pass too.")
+    if not estimate["attribute_cost"]["everything_planned"]["fits_cap"]:
+        raise SystemExit("The dry run estimates the attribute pass would pass its cap.")
+    return estimate
+
+
+def _require_attribute_score(space: Workspace) -> dict:
+    """The pass runs on the 2,000 only after it has been scored against hand labels."""
+    report = json.loads(space.gold_eval.read_text()) if space.gold_eval.exists() else {}
+    if "attribute_pass" not in report:
+        raise SystemExit(
+            "Score the attribute pass against hand labels first: make label-gold-pool, "
+            "then make reproduce."
+        )
+    return report["attribute_pass"]
+
+
+def run_attributes(fake: bool, space: Workspace, secrets: Secrets) -> dict:
+    """Add attributes to the labeled training products. Their category calls are not repeated."""
+    _require_attribute_estimate(space)
+    score = _require_attribute_score(space)
+    if not space.labels.exists():
+        raise SystemExit("Label the first products before adding their attributes.")
+    taxonomy, products, gold, _ = _load_inputs()
+    rows = read_jsonl(space.labels)
+    by_asin = {p["parent_asin"]: p for p in products}
+    sample = [by_asin[row["parent_asin"]] for row in rows]
+    _, extractor, runner, tracer = _build_labeler(taxonomy, space, fake, secrets)
+    if not fake:
+        print(ImageStore(space.images).ensure_all(sample))
+    extractor.extract(sample, rows)
+    if tracer is not None:
+        tracer.flush()
+    write_jsonl(space.labels, rows)
+    exported = export_training_labels(rows, gold, space.training_labels)
+    return {
+        "products": len(rows),
+        "training_labels": exported,
+        "scored_against_hand_labels": score,
+        "attributes": attribute_report(rows),
+        "spent": _spent(runner.budget),
+        "fake": fake,
+    }
+
+
 def run_stage(n: int | None, fake: bool, space: Workspace, secrets: Secrets) -> dict:
     """Label the first `n` training products, or all of them. Requires a passing dry run."""
     _require_estimate(space, "first_run" if n == FIRST_RUN_PRODUCTS else "all_training")
     taxonomy, products, gold, shortlists = _load_inputs()
     order = labeling_order(products, gold)
     sample = order[:n] if n else order
-    labeler, runner, tracer = _build_labeler(taxonomy, space, fake, secrets)
+    labeler, extractor, runner, tracer = _build_labeler(taxonomy, space, fake, secrets)
     if not fake:
         print(ImageStore(space.images).ensure_all(sample))
     rows = labeler.label(sample, shortlists)
@@ -166,14 +245,16 @@ def run_gold_pool(fake: bool, space: Workspace, secrets: Secrets) -> dict:
     These rows stay in their own file. They never join the training labels, and the labeling page
     never reads them.
     """
-    _require_estimate(space, "first_run_and_gold_pool")
+    _require_attribute_estimate(space)
     taxonomy, products, gold, shortlists = _load_inputs()
     pool = set(gold)
     sample = [p for p in products if p["parent_asin"] in pool]
-    labeler, runner, tracer = _build_labeler(taxonomy, space, fake, secrets)
+    labeler, extractor, runner, tracer = _build_labeler(taxonomy, space, fake, secrets)
     if not fake:
         print(ImageStore(space.images).ensure_all(sample))
     rows = labeler.label(sample, shortlists)
+    # Attributes too, so the pass can be scored against hand labels before it runs on training.
+    extractor.extract(sample, rows)
     if tracer is not None:
         tracer.flush()
     write_jsonl(space.gold_rows, rows)
@@ -195,6 +276,11 @@ def _parser() -> argparse.ArgumentParser:
     stage.add_argument(
         "--gold-pool", action="store_true", help="the gold pool, kept apart, to score the pipeline"
     )
+    stage.add_argument(
+        "--attributes",
+        action="store_true",
+        help="the attribute pass on labeled training products, after it is scored on gold",
+    )
     run.add_argument("--fake", action="store_true")
     return parser
 
@@ -208,8 +294,13 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
         if args.command == "dry-run":
             report = dry_run(args.n, args.fake, space, secrets)
             print(format_projection(report["cost"]))
+            print(format_attribute_projection(report["attribute_cost"]))
             print(json.dumps(report["agreement"]["agreement"], indent=2))
             print(f"Full report: {space.dry_run}")
+        elif args.attributes:
+            report = run_attributes(args.fake, space, secrets)
+            print(json.dumps(report["attributes"], indent=2))
+            print(f"Spent by vendor: {report['spent']}")
         elif args.gold_pool:
             report = run_gold_pool(args.fake, space, secrets)
             print(f"Labeled {report['products']} gold-pool products, kept apart from training.")

@@ -19,7 +19,7 @@ from google import genai
 from google.genai import types as genai_types
 
 from taxon.labeling.env import Secrets
-from taxon.labeling.llm import CHOICE_SCHEMA, LLMRequest, LLMResult, Status, Usage
+from taxon.labeling.llm import LLMRequest, LLMResult, Status, Usage
 
 ANTHROPIC_URL = "https://api.anthropic.com"
 OPENAI_URL = "https://api.openai.com/v1"
@@ -74,7 +74,7 @@ class AnthropicBatchClient:
             "messages": [{"role": "user", "content": content}],
             "output_config": {
                 "effort": request.config.effort,
-                "format": {"type": "json_schema", "schema": CHOICE_SCHEMA},
+                "format": {"type": "json_schema", "schema": request.schema},
             },
         }
 
@@ -130,7 +130,7 @@ class OpenAIBatchClient:
             "reasoning_effort": request.config.effort,
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {"name": "choice", "strict": True, "schema": CHOICE_SCHEMA},
+                "json_schema": {"name": request.purpose, "strict": True, "schema": request.schema},
             },
             "prompt_cache_key": "taxon-labeling",
         }
@@ -233,7 +233,7 @@ class GoogleBatchClient:
             "generationConfig": {
                 "maxOutputTokens": request.config.max_tokens,
                 "responseMimeType": "application/json",
-                "responseJsonSchema": CHOICE_SCHEMA,
+                "responseJsonSchema": request.schema,
                 "thinkingConfig": {"thinkingLevel": request.config.effort.upper()},
             },
         }
