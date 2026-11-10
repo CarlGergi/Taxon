@@ -27,6 +27,7 @@ from taxon.labeling.budget import Budget
 from taxon.labeling.cache import ResponseCache
 from taxon.labeling.fakes import FakeBatchClient
 from taxon.labeling.llm import LLMResult, Status, Usage
+from taxon.labeling.pipeline import ARBITRATOR
 from taxon.labeling.runner import BatchRunner
 from taxon.products import read_jsonl, write_jsonl
 
@@ -48,6 +49,12 @@ def product(asin, price=20.0, **extra):
         "price": price,
         "domain": "d",
     } | extra
+
+
+def test_the_judge_is_not_from_the_arbitrator_s_family():
+    """The arbitrator's labels shape the Taxon catalog, so a judge of its family could favor it."""
+    assert JUDGE.vendor != ARBITRATOR.vendor
+    assert JUDGE.vendor == "openai"
 
 
 def test_the_schema_wants_one_answer_per_requirement():
@@ -134,8 +141,8 @@ def test_the_estimate_counts_only_pairs_that_need_the_judge():
 
 
 def fake_runner(tmp_path, responder=None):
-    clients = {v: FakeBatchClient(v, *(responder,) if responder else ()) for v in ("anthropic",)}
-    budget = Budget(tmp_path / "ledger.jsonl", {"anthropic": 5.0})
+    clients = {JUDGE.vendor: FakeBatchClient(JUDGE.vendor, *(responder,) if responder else ())}
+    budget = Budget(tmp_path / "ledger.jsonl", {JUDGE.vendor: 5.0})
     return BatchRunner(clients, ResponseCache(tmp_path / "c"), budget, tmp_path / "o"), clients
 
 
@@ -148,7 +155,7 @@ def test_judging_calls_only_when_price_does_not_settle_it(tmp_path):
     products = {"X": product("X"), "Y": product("Y", 99.0)}
     pairs = [{"task": "t1", "asin": "X"}, {"task": "t1", "asin": "Y"}]
     judged = judge_pairs(pairs, {"t1": TASK}, products, runner, no_image)
-    assert clients["anthropic"].requests_sent == 1
+    assert clients[JUDGE.vendor].requests_sent == 1
     assert [(j["asin"], j["by"]) for j in judged] == [("X", "judge"), ("Y", "price")]
     assert judged[1]["verdict"] == FAILS
 

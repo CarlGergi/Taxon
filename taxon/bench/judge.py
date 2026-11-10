@@ -21,8 +21,9 @@ from taxon.labeling.prompts import product_block
 from taxon.labeling.runner import BatchRunner
 from taxon.products import seeded_hash
 
-# A reply is a few words per requirement. A cut-off reply is unsure, which goes to a person.
-JUDGE = ModelConfig("anthropic", "claude-sonnet-5-5", max_tokens=512, effort="low")
+# Not Claude: the arbitrator is, so a Claude judge could share its leanings and favor the Taxon
+# catalog. A cut-off reply is unsure, which goes to a person.
+JUDGE = ModelConfig("openai", "gpt-6-luna", max_tokens=1_024, effort="low")
 MEETS, FAILS, UNSURE = "meets", "fails", "unsure"
 VALIDATION_SAMPLE = 50
 # The judge is trusted only if it agrees with hand judgments on at least this share of the sample

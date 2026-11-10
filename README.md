@@ -102,7 +102,8 @@ Agents can return correct products that have no hand label. Those are judged rat
 with pooled judging: every non-gold product any condition returns for a task is collected once, and
 checked against the task's constraints. Price is checked in code. Category and attribute
 constraints go to an LLM judge that sees only the raw listing and image, never a catalog's
-enrichment, so no condition is judged on its own data.
+enrichment, so no condition is judged on its own data. The judge is `gpt-6-luna`, not Claude:
+the arbitrator is Claude, and a judge from the same family could favor the Taxon catalog.
 
 ```bash
 make judge-price
