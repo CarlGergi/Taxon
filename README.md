@@ -57,10 +57,18 @@ pipeline against hand labels, and its output never reaches training.
 
 Attributes come from a separate second pass, never from the category calls. Once a product's
 category is settled, by agreement or by the arbitrator, one cheap annotator with the image fills in
-that category's attributes in one call. The taxonomy's value lists are too long to send, so answers
-are kept only when they match an allowed value exactly. The dry run prices this pass, the gold-pool
-stage runs it so it can be scored against hand-labeled attributes, and only then does
-`make label-attributes` run it on the labeled training products. Category responses are cached,
+that category's attributes in one call. Value lists are too long to send (color alone allows over
+22,000 values), so there are two versions:
+
+- **Exact:** the model names each value, and only answers that match an allowed value exactly are
+  kept.
+- **Shortlist:** for each attribute, the 20 allowed values closest to the listing's text, by
+  character n-grams, are listed, and the model picks one or none. So "navy blue" can still reach
+  "Navy".
+
+Both count answers that named no allowed value. The dry run prices both, and the gold-pool stage
+runs both so each can be scored against hand-labeled attributes. `make label-attributes` then runs
+only the version that scored better. Category responses are cached,
 so adding the pass later pays only for the new calls. `make label-first` stays category-only.
 
 Hand labels and paid responses are not in git. This zips them, along with anything listed in

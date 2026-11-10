@@ -11,7 +11,12 @@ from pathlib import Path
 
 from taxon.fetch import fetch
 from taxon.gold.pool import assert_disjoint, stratified_order, training_products
-from taxon.labeling.attributes import ATTRIBUTE_ANNOTATOR, AttributeExtractor
+from taxon.labeling.attributes import (
+    ATTRIBUTE_ANNOTATOR,
+    MODES,
+    AttributeExtractor,
+    use_mode,
+)
 from taxon.labeling.budget import CAPS, Budget, BudgetExceeded
 from taxon.labeling.cache import ResponseCache
 from taxon.labeling.env import MissingKey, Secrets, load_secrets
@@ -125,7 +130,8 @@ def dry_run(n: int, fake: bool, space: Workspace, secrets: Secrets) -> dict:
     if not fake:
         print(ImageStore(space.images).ensure_all(sample))
     rows = labeler.label(sample, shortlists)
-    extractor.extract(sample, rows)
+    for mode in MODES:
+        extractor.extract(sample, rows, mode)
     if tracer is not None:
         tracer.flush()
     targets = {
@@ -140,14 +146,31 @@ def dry_run(n: int, fake: bool, space: Workspace, secrets: Secrets) -> dict:
         "first_run": FIRST_RUN_PRODUCTS,
         "first_run_and_gold_pool": FIRST_RUN_PRODUCTS + len(gold),
     }
+    vendor = ATTRIBUTE_ANNOTATOR.vendor
+    alone = {
+        mode: attribute_projection(rows, attribute_targets, spent, cost, vendor, PLANNED, mode)
+        for mode in MODES
+    }
+    # Both versions run on the gold pool, so each one's plan carries the other's gold-pool cost.
+    attribute_cost = {
+        mode: attribute_projection(
+            rows,
+            attribute_targets,
+            spent,
+            cost,
+            vendor,
+            PLANNED,
+            mode,
+            extra=sum(alone[m]["gold_pool"]["upper_95"] for m in MODES if m != mode),
+        )
+        for mode in MODES
+    }
     report = {
         "sample": n,
         "fake": fake,
         "cost": cost,
-        "attribute_cost": attribute_projection(
-            rows, attribute_targets, spent, cost, ATTRIBUTE_ANNOTATOR.vendor, PLANNED
-        ),
-        "attributes": attribute_report(rows),
+        "attribute_cost": attribute_cost,
+        "attributes": {mode: attribute_report(rows, mode) for mode in MODES},
         "agreement": agreement_report(rows),
     }
     space.write_result(space.dry_run, report)
@@ -167,9 +190,9 @@ def _require_estimate(space: Workspace, stage: str) -> None:
 def _require_attribute_estimate(space: Workspace) -> dict:
     _require_estimate(space, "first_run_and_gold_pool")
     estimate = json.loads(space.dry_run.read_text(encoding="utf-8"))
-    if "attribute_cost" not in estimate:
-        raise SystemExit("Rerun the dry run, so it prices the attribute pass too.")
-    if not estimate["attribute_cost"]["everything_planned"]["fits_cap"]:
+    if set(estimate.get("attribute_cost", {})) != set(MODES):
+        raise SystemExit("Rerun the dry run, so it prices both versions of the attribute pass.")
+    if not all(e["everything_planned"]["fits_cap"] for e in estimate["attribute_cost"].values()):
         raise SystemExit("The dry run estimates the attribute pass would pass its cap.")
     return estimate
 
@@ -177,7 +200,7 @@ def _require_attribute_estimate(space: Workspace) -> dict:
 def _require_attribute_score(space: Workspace) -> dict:
     """The pass runs on the 2,000 only after it has been scored against hand labels."""
     report = json.loads(space.gold_eval.read_text()) if space.gold_eval.exists() else {}
-    if "attribute_pass" not in report:
+    if "better" not in report.get("attribute_pass", {}):
         raise SystemExit(
             "Score the attribute pass against hand labels first: make label-gold-pool, "
             "then make reproduce."
@@ -198,7 +221,10 @@ def run_attributes(fake: bool, space: Workspace, secrets: Secrets) -> dict:
     _, extractor, runner, tracer = _build_labeler(taxonomy, space, fake, secrets)
     if not fake:
         print(ImageStore(space.images).ensure_all(sample))
-    extractor.extract(sample, rows)
+    # Only the version that scored better against hand labels runs on training products.
+    mode = score["better"]
+    extractor.extract(sample, rows, mode)
+    use_mode(rows, mode)
     if tracer is not None:
         tracer.flush()
     write_jsonl(space.labels, rows)
@@ -207,7 +233,8 @@ def run_attributes(fake: bool, space: Workspace, secrets: Secrets) -> dict:
         "products": len(rows),
         "training_labels": exported,
         "scored_against_hand_labels": score,
-        "attributes": attribute_report(rows),
+        "mode": mode,
+        "attributes": attribute_report(rows, mode),
         "spent": _spent(runner.budget),
         "fake": fake,
     }
@@ -253,8 +280,10 @@ def run_gold_pool(fake: bool, space: Workspace, secrets: Secrets) -> dict:
     if not fake:
         print(ImageStore(space.images).ensure_all(sample))
     rows = labeler.label(sample, shortlists)
-    # Attributes too, so the pass can be scored against hand labels before it runs on training.
-    extractor.extract(sample, rows)
+    # Both attribute versions too, so each can be scored against hand labels before either runs
+    # on training products.
+    for mode in MODES:
+        extractor.extract(sample, rows, mode)
     if tracer is not None:
         tracer.flush()
     write_jsonl(space.gold_rows, rows)
@@ -294,7 +323,8 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
         if args.command == "dry-run":
             report = dry_run(args.n, args.fake, space, secrets)
             print(format_projection(report["cost"]))
-            print(format_attribute_projection(report["attribute_cost"]))
+            for entry in report["attribute_cost"].values():
+                print(format_attribute_projection(entry))
             print(json.dumps(report["agreement"]["agreement"], indent=2))
             print(f"Full report: {space.dry_run}")
         elif args.attributes:

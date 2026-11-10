@@ -28,6 +28,7 @@ from taxon.gold.pool import (
 )
 from taxon.gold.server import LABELS_PATH
 from taxon.gold.store import GoldStore
+from taxon.labeling.attributes import EXACT, MODES
 from taxon.labeling.report import agreement_report, arbitrator_score
 from taxon.labeling.retrieval import CandidateRetriever, build_shortlists, recall_at
 from taxon.pins import (
@@ -136,19 +137,29 @@ def attribute_pass_score(
 ) -> dict | None:
     """The attribute pass against hand-labeled attribute values, beside the free alternative of
     taking only what a listing's details state. None until some hand label has attributes."""
-    asins = [
-        a for a in sorted(gold) if gold[a]["attributes"] and "attributes" in rows.get(a, {})
-    ]
+    def ran(asin: str, mode: str) -> bool:
+        return "attributes" in rows.get(asin, {}).get("attribute_runs", {}).get(mode, {})
+
+    asins = [a for a in sorted(gold) if gold[a]["attributes"] and all(ran(a, m) for m in MODES)]
     if not asins:
         return None
     golds = [gold[a]["attributes"] for a in asins]
     stated = [
         stated_attributes(products[a]["details"], gold[a]["path"], taxonomy) for a in asins
     ]
+    versions = {
+        mode: attribute_accuracy(
+            golds, [rows[a]["attribute_runs"][mode]["attributes"] for a in asins]
+        )
+        for mode in MODES
+    }
+    # A tie keeps the exact version, which sends the shorter prompt.
+    better = max(MODES, key=lambda m: (versions[m]["accuracy"] or 0.0, m == EXACT))
     return {
         "products": len(asins),
         "same_category_as_hand_label": sum(rows[a]["path"] == gold[a]["path"] for a in asins),
-        "attribute_pass": attribute_accuracy(golds, [rows[a]["attributes"] for a in asins]),
+        "versions": versions,
+        "better": better,
         "details_only": attribute_accuracy(golds, stated),
     }
 

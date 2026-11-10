@@ -23,12 +23,17 @@ def answer(request: LLMRequest, choice: int) -> LLMResult:
 
 
 def demo_attributes(request: LLMRequest) -> LLMResult:
-    """Says Red for a color now and then, and null for everything else."""
+    """Gives a color now and then, and nothing for everything else: "Red" when asked to name a
+    value, option 1 when picking from a shortlist."""
     seed = hashlib.sha256(request.user.encode()).digest()
-    values = {
-        handle: "Red" if handle == "color" and seed[0] < 128 else None
-        for handle in request.schema["properties"]
-    }
+    properties = request.schema["properties"]
+    values = {}
+    for handle, spec in properties.items():
+        picks = handle == "color" and seed[0] < 128
+        if spec["type"] == "integer":
+            values[handle] = 1 if picks else 0
+        else:
+            values[handle] = "Red" if picks else None
     text = json.dumps(values)
     return LLMResult(request.key, Status.OK, text, _usage_for(request, text))
 
