@@ -174,6 +174,35 @@ works, and its numbers are not results. `make train-gpu` fine-tunes the real mod
 GPU, and refuses provisional labels. Accuracy is only ever computed against hand labels, with
 `python -m taxon.training evaluate --on gold`.
 
+## Reinforcement learning
+
+GRPO with TRL follows fine-tuning, starting from the fine-tuned adapter. Its rewards are computed
+exactly from the taxonomy, with no reward model:
+
+- **Field compliance:** the reply holds exactly the requested fields.
+- **Valid node:** the category is a real taxonomy path.
+- **Path match:** credit for each level shared with the label, weighted by depth, so deep levels
+  count most. Going past the labeled path costs too.
+- **Allowed values:** attribute values are ones the category allows.
+- **Depth penalty:** stopping above the labeled depth costs extra.
+
+Depth weighting and the penalty together keep the model from retreating to shallow, safe
+categories: stopping at the top level earns nothing net. Each run also plots predicted against
+labeled depth over training.
+
+Trie-constrained decoding makes every category valid by construction. When category is requested,
+a logits processor opens the reply with it, then allows only tokens that continue a real taxonomy
+path, and lets the value close only where a path ends.
+
+```bash
+make rl-tiny
+make rl-gpu RUN=name PRODUCTS=2000 STEPS=500
+```
+
+`make rl-tiny` runs on CPU with tiny random weights and provisional labels, then compares free and
+constrained decoding on validity and latency. Its numbers are not results. `make rl-gpu` uses the
+real model with vLLM rollouts, needs a GPU, and refuses provisional labels.
+
 ## Results
 
 ### Label space

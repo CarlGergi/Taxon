@@ -29,7 +29,7 @@ IMAGES_DIR = DATA_DIR / "images"
 EXIT_REFUSED = 2
 
 
-def _image_lookup(products: list[dict], images_dir: Path | None) -> Callable:
+def image_lookup(products: list[dict], images_dir: Path | None) -> Callable:
     if images_dir is None:
         return lambda _product: None
     store = ImageStore(images_dir)
@@ -71,7 +71,7 @@ def _train(args, source, products, queue, taxonomy, processor_factory) -> int:
         print(f"STOPPED: no {source.name} labels at {source.path}")
         return EXIT_REFUSED
     items = load_labeled(source, products, queue, taxonomy, SEED, "train", args.products)
-    image_for = _image_lookup([i.product for i in items], args.images)
+    image_for = image_lookup([i.product for i in items], args.images)
     rows = training_examples(items, taxonomy, SEED, image_for, args.variants)
     record = run_training(rows, processor_factory(), settings, source, args.runs / args.name)
     print(json.dumps({k: record[k] for k in ("model", "label_source", "examples")}))
@@ -98,7 +98,7 @@ def _evaluate(args, source, products, queue, taxonomy, labels_path, processor_fa
         items = _gold_items(products, hand_labels)[: args.products]
     else:
         items = load_labeled(source, products, queue, taxonomy, SEED, "val", args.products)
-    image_for = _image_lookup([i.product for i in items], args.images)
+    image_for = image_lookup([i.product for i in items], args.images)
     model, record = load_trained(run_dir, processor)
     report = evaluate_run(
         run_dir,

@@ -1,6 +1,6 @@
 .PHONY: setup test lint reproduce clean backup gold label-fake label-dry-run label-first \
 	label-gold-pool label-attributes tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu \
-	judge-price judge-sample judge-review judge-agreement judge-pool
+	judge-price judge-sample judge-review judge-agreement judge-pool rl-tiny rl-gpu
 
 TARGET ?= 200
 TASKS ?= 100
@@ -109,3 +109,14 @@ train-tiny:
 train-gpu:
 	uv run python -m taxon.training train --gpu --labels pipeline --name $(RUN) --products $(PRODUCTS) \
 		--max-steps $(STEPS)
+
+# GRPO on CPU with tiny random weights, on top of make train-tiny's adapter, then free against
+# trie-constrained decoding. This only shows the pipeline runs: its numbers are not results.
+rl-tiny:
+	uv run python -m taxon.rl train --from tiny
+	uv run python -m taxon.rl decode
+
+# GRPO on a rented GPU with vLLM rollouts, on top of a fine-tuning run, with pipeline labels.
+rl-gpu:
+	uv run python -m taxon.rl train --gpu --labels pipeline --from $(RUN) --name $(RUN)-grpo \
+		--products $(PRODUCTS) --max-steps $(STEPS)
