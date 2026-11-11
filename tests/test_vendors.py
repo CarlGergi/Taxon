@@ -11,7 +11,7 @@ from PIL import Image
 
 from taxon.labeling.budget import CAPS
 from taxon.labeling.env import MissingKey, Secrets
-from taxon.labeling.llm import CHOICE_SCHEMA, LLMRequest, ModelConfig, Status
+from taxon.labeling.llm import CHOICE_SCHEMA, LLMRequest, ModelConfig, Status, Unreachable
 from taxon.labeling.pipeline import ANNOTATORS, ARBITRATOR, GEMINI
 from taxon.labeling.vendors import (
     ANTHROPIC_URL,
@@ -181,6 +181,14 @@ def test_anthropic_reads_results_past_thinking_blocks_with_cache_usage(server):
     assert result.usage.cached_tokens == 100
     assert result.usage.cache_write_tokens == 7
     assert result.usage.output_tokens == 5
+
+
+@pytest.mark.parametrize("make", [AnthropicBatchClient, OpenAIBatchClient])
+def test_a_poll_that_cannot_connect_raises_unreachable(make):
+    client = make(KEY, base_url="http://127.0.0.1:9")
+    client.client = client.client.with_options(max_retries=0)
+    with pytest.raises(Unreachable):
+        client.poll("batch-1")
 
 
 def test_anthropic_poll_is_false_while_running(server):

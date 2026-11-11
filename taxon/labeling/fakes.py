@@ -7,7 +7,7 @@ import json
 import re
 from collections.abc import Callable
 
-from taxon.labeling.llm import LLMRequest, LLMResult, Status, Usage
+from taxon.labeling.llm import LLMRequest, LLMResult, Status, Unreachable, Usage
 
 
 def _usage_for(request: LLMRequest, text: str) -> Usage:
@@ -71,15 +71,20 @@ def demo_responder(request: LLMRequest) -> LLMResult:
 
 
 class FakeBatchClient:
-    """Finishes each batch after `polls_until_done` polls, recording what it was sent."""
+    """Finishes each batch after `polls_until_done` polls, recording what it was sent.
+
+    The first `unreachable_polls` polls fail as if the network were down.
+    """
 
     def __init__(
         self,
         vendor: str,
         responder: Callable[[LLMRequest], LLMResult] = demo_responder,
         polls_until_done: int = 0,
+        unreachable_polls: int = 0,
     ):
         self.vendor = vendor
+        self.unreachable_polls = unreachable_polls
         self.responder = responder
         self.polls_until_done = polls_until_done
         self.submitted: list[list[LLMRequest]] = []
@@ -94,6 +99,9 @@ class FakeBatchClient:
         return batch_id
 
     def poll(self, batch_id: str) -> bool:
+        if self.unreachable_polls:
+            self.unreachable_polls -= 1
+            raise Unreachable(self.vendor)
         self._polls[batch_id] += 1
         return self._polls[batch_id] > self.polls_until_done
 

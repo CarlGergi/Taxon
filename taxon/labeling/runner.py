@@ -11,13 +11,23 @@ from pathlib import Path
 
 from taxon.labeling.budget import Budget, BudgetExceeded
 from taxon.labeling.cache import ResponseCache
-from taxon.labeling.llm import BatchClient, LLMRequest, LLMResult, ModelConfig, Status
+from taxon.labeling.llm import (
+    BatchClient,
+    LLMRequest,
+    LLMResult,
+    ModelConfig,
+    Status,
+    Unreachable,
+)
 from taxon.labeling.pricing import cost_of, worst_case_cost
 
 MAX_REQUESTS_PER_BATCH = 1_000
 MAX_BYTES_PER_BATCH = 100_000_000
 MAX_ATTEMPTS = 3
 POLL_SECONDS = 30.0
+# A dropped connection, or a laptop asleep, should not end a run that has batches out. An hour of
+# failed polls in a row does; the open batches are journaled, so the next run picks them up.
+MAX_UNREACHABLE_POLLS = 120
 
 
 def _request_bytes(request: LLMRequest) -> int:
@@ -151,6 +161,7 @@ class BatchRunner:
 
         attempts: Counter[str] = Counter()
         blocked: dict[str, int] = {}
+        unreachable = 0
         while pending or open_batches:
             blocked = {}
             for batch in split_into_batches(pending.values()):
@@ -167,7 +178,16 @@ class BatchRunner:
 
             still_open = []
             for entry in open_batches:
-                if not self.clients[entry["vendor"]].poll(entry["id"]):
+                try:
+                    done = self.clients[entry["vendor"]].poll(entry["id"])
+                except Unreachable:
+                    unreachable += 1
+                    if unreachable >= MAX_UNREACHABLE_POLLS:
+                        raise
+                    still_open.append(entry)
+                    continue
+                unreachable = 0
+                if not done:
                     still_open.append(entry)
                     continue
                 for key, result in self._collect(entry).items():

@@ -99,12 +99,19 @@ class LLMResult:
         )
 
 
+class Unreachable(ConnectionError):
+    """The vendor could not be reached. The batch may well still be running on its side."""
+
+
 class BatchClient(Protocol):
     def submit(self, requests: list[LLMRequest]) -> str:
         """Start a batch and return its id."""
 
     def poll(self, batch_id: str) -> bool:
-        """True once the batch has finished, in whatever final state."""
+        """True once the batch has finished, in whatever final state.
+
+        Raises Unreachable when the vendor cannot be reached, so the caller can ask again later.
+        """
 
     def results(self, batch_id: str) -> list[LLMResult]:
         """The results available for a finished batch. Missing keys count as failed."""

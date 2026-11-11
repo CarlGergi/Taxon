@@ -19,7 +19,7 @@ from google import genai
 from google.genai import types as genai_types
 
 from taxon.labeling.env import Secrets
-from taxon.labeling.llm import LLMRequest, LLMResult, Status, Usage
+from taxon.labeling.llm import LLMRequest, LLMResult, Status, Unreachable, Usage
 
 ANTHROPIC_URL = "https://api.anthropic.com"
 OPENAI_URL = "https://api.openai.com/v1"
@@ -85,7 +85,11 @@ class AnthropicBatchClient:
         return batch.id
 
     def poll(self, batch_id: str) -> bool:
-        return self.client.messages.batches.retrieve(batch_id).processing_status == "ended"
+        try:
+            batch = self.client.messages.batches.retrieve(batch_id)
+        except anthropic.APIConnectionError as error:
+            raise Unreachable("anthropic") from error
+        return batch.processing_status == "ended"
 
     def results(self, batch_id: str) -> list[LLMResult]:
         return [self._result(row) for row in self.client.messages.batches.results(batch_id)]
@@ -155,7 +159,11 @@ class OpenAIBatchClient:
         return batch.id
 
     def poll(self, batch_id: str) -> bool:
-        return self.client.batches.retrieve(batch_id).status in _OPENAI_FINISHED
+        try:
+            batch = self.client.batches.retrieve(batch_id)
+        except openai.APIConnectionError as error:
+            raise Unreachable("openai") from error
+        return batch.status in _OPENAI_FINISHED
 
     def results(self, batch_id: str) -> list[LLMResult]:
         batch = self.client.batches.retrieve(batch_id)

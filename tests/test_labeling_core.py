@@ -7,9 +7,17 @@ from taxon.labeling.budget import CAPS, Budget, BudgetExceeded
 from taxon.labeling.cache import ResponseCache
 from taxon.labeling.env import MissingKey, Secrets, load_secrets
 from taxon.labeling.fakes import FakeBatchClient, answer
-from taxon.labeling.llm import CHOICE_SCHEMA, LLMRequest, LLMResult, ModelConfig, Status, Usage
+from taxon.labeling.llm import (
+    CHOICE_SCHEMA,
+    LLMRequest,
+    LLMResult,
+    ModelConfig,
+    Status,
+    Unreachable,
+    Usage,
+)
 from taxon.labeling.pricing import PRICES, cost_of, price_for, worst_case_cost
-from taxon.labeling.runner import BatchRunner, split_into_batches
+from taxon.labeling.runner import MAX_UNREACHABLE_POLLS, BatchRunner, split_into_batches
 from taxon.pins import ROOT
 
 HAIKU = ModelConfig("anthropic", "claude-haiku-5-5", 1024, "low")
@@ -247,6 +255,23 @@ def test_polls_until_a_batch_finishes(world):
     r = request()
     assert runner.run([r])[r.key].status is Status.OK
     assert clients["anthropic"]._polls["fake-anthropic-0"] == 4
+
+
+def test_a_dropped_connection_while_polling_does_not_end_the_run(world):
+    runner, clients = world(unreachable_polls=5)
+    r = request()
+    assert runner.run([r])[r.key].status is Status.OK
+    assert clients["anthropic"].requests_sent == 1
+
+
+def test_polling_gives_up_after_an_hour_unreachable_and_a_rerun_collects(world, tmp_path):
+    runner, clients = world(unreachable_polls=MAX_UNREACHABLE_POLLS)
+    r = request()
+    with pytest.raises(Unreachable):
+        runner.run([r])
+    assert list((tmp_path / "journal").glob("*"))
+    assert runner.run([r])[r.key].status is Status.OK
+    assert clients["anthropic"].requests_sent == 1
 
 
 def test_stops_before_a_cap_would_be_passed(world):
