@@ -253,6 +253,8 @@ def test_a_grpo_run_saves_its_adapter_depths_and_plot(processor, taxonomy, tmp_p
     assert json.loads((tmp_path / DEPTH_FILE).read_text())
     assert (tmp_path / DEPTH_PLOT).exists()
     assert record["provisional_labels"] is True
+    assert record["hardware"]["device"] == "cpu"
+    assert record["rollouts"] == "generate"
     assert len(record["losses"]) == 2
     printed = capsys.readouterr().out
     assert "accuracy" not in printed and "reward" not in printed
@@ -342,13 +344,13 @@ def test_grpo_needs_the_fine_tuning_run_it_names(world, capsys):
 
 
 def test_the_gpu_flag_stops_without_a_gpu(world, capsys, monkeypatch):
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(cli, "accelerator", lambda: None)
     assert run_cli(world, "train", "--gpu", "--labels", "pipeline") == cli.EXIT_REFUSED
     assert "no GPU" in capsys.readouterr().out
 
 
 def test_the_gpu_flag_stops_on_provisional_labels(world, capsys, monkeypatch):
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(cli, "accelerator", lambda: "mps")
     assert run_cli(world, "train", "--gpu") == cli.EXIT_REFUSED
     assert "provisional" in capsys.readouterr().out
 

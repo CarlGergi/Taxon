@@ -16,11 +16,12 @@ from peft import PeftModel
 from eval.fields import attribute_accuracy, field_compliance, field_invariance, parse_fields
 from eval.metrics import evaluate
 from taxon.gold.pool import assert_disjoint
+from taxon.hardware import hardware
 from taxon.products import seeded_hash
 from taxon.training.collate import load_images, prompt_text
 from taxon.training.examples import ImageFor, LabeledProduct, request_row
 from taxon.training.fields import CATEGORY, ordered
-from taxon.training.train import ADAPTER_DIR, RUN_FILE, TRAIN_IDS_FILE, base_model
+from taxon.training.train import ADAPTER_DIR, RUN_FILE, TRAIN_IDS_FILE, base_model, run_device
 
 ALONE = "alone"
 FULL = "full"
@@ -136,6 +137,7 @@ def evaluate_run(
         "model": record["model"],
         "trained_on": record["label_source"],
         "evaluated_on": on,
+        "hardware": hardware(run_device(record.get("gpu", False))),
         "products": len(items),
         **field_report(rows),
     }

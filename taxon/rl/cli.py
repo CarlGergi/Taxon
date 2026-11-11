@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from taxon.fetch import fetch
+from taxon.hardware import accelerator
 from taxon.pins import DATA_DIR, DERIVED_DIR, SEED, TAXONOMY
 from taxon.products import read_jsonl
 from taxon.taxonomy import Taxonomy
@@ -29,8 +30,6 @@ TINY_NOTE = "Tiny random weights: this shows the pipeline runs, and says nothing
 
 
 def _train(args, source, products, queue, taxonomy, processor_factory) -> int:
-    import torch
-
     from taxon.rl.grpo import GrpoSettings, run_grpo
     from taxon.training.train import RunRefused, check_settings
 
@@ -39,11 +38,12 @@ def _train(args, source, products, queue, taxonomy, processor_factory) -> int:
         gpu=args.gpu,
         max_steps=args.max_steps,
         num_generations=args.generations,
+        batch_size=args.generations * args.prompts,
         max_completion_length=args.max_completion_length,
         learning_rate=args.learning_rate,
     )
     try:
-        check_settings(settings, source, torch.cuda.is_available())
+        check_settings(settings, source, accelerator())
     except RunRefused as error:
         print(f"STOPPED: {error}")
         return EXIT_REFUSED
@@ -124,7 +124,8 @@ def main(
     train.add_argument("--products", type=int, default=16)
     train.add_argument("--max-steps", type=int, default=4)
     train.add_argument("--generations", type=int, default=4, help="replies per prompt")
-    train.add_argument("--max-completion-length", type=int, default=64)
+    train.add_argument("--prompts", type=int, default=2, help="prompts per step")
+    train.add_argument("--max-completion-length", type=int, default=128)
     train.add_argument("--learning-rate", type=float, default=1e-5)
     decode = commands.add_parser("decode", help="free against trie-constrained decoding")
     decode.add_argument("--name", default="grpo-tiny")

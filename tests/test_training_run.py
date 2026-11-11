@@ -156,6 +156,7 @@ def test_the_record_says_how_the_run_was_made(processor, rows, tmp_path):
     run_training(rows * 4, processor, FAST, SILVER, tmp_path)
     record = json.loads((tmp_path / train.RUN_FILE).read_text())
     assert record["model"] == TINY
+    assert record["hardware"]["device"] == "cpu"
     assert record["label_source"] == "silver"
     assert record["provisional_labels"] is True
     assert (record["examples"], record["with_image"]) == (8, 4)
@@ -189,8 +190,8 @@ def test_gradient_checkpointing_still_trains_the_adapter(processor, rows, tmp_pa
     """The GPU setting most likely to break silently, checked here rather than on a rented GPU."""
     original = train.training_arguments
 
-    def with_checkpointing(settings, out_dir):
-        arguments = original(settings, out_dir)
+    def with_checkpointing(settings, out_dir, device):
+        arguments = original(settings, out_dir, device)
         arguments.gradient_checkpointing = True
         return arguments
 
@@ -203,27 +204,32 @@ def test_gradient_checkpointing_still_trains_the_adapter(processor, rows, tmp_pa
 
 
 def test_real_weights_load_only_behind_the_flag(processor, monkeypatch):
-    def real():
-        return "real weights"
+    def real(device):
+        return f"real weights on {device}"
 
+    aligned = []
     monkeypatch.setattr(train, "real_model", real)
-    assert base_model(processor, True, 1) == "real weights"
-    assert base_model(processor, False, 1) != "real weights"
+    monkeypatch.setattr(train, "accelerator", lambda: "mps")
+    monkeypatch.setattr(train, "align_end_tokens", lambda model, _tokenizer: aligned.append(model))
+    assert base_model(processor, True, 1) == "real weights on mps"
+    assert aligned == ["real weights on mps"]
+    assert not isinstance(base_model(processor, False, 1), str)
 
 
 def test_the_gpu_flag_needs_a_gpu():
     with pytest.raises(RunRefused, match="no GPU"):
-        check_settings(TrainSettings(gpu=True), PIPELINE, gpu_available=False)
+        check_settings(TrainSettings(gpu=True), PIPELINE, device=None)
 
 
 def test_provisional_labels_do_not_get_a_gpu_run():
     with pytest.raises(RunRefused, match="provisional"):
-        check_settings(TrainSettings(gpu=True), SILVER, gpu_available=True)
+        check_settings(TrainSettings(gpu=True), SILVER, device="mps")
 
 
 def test_real_labels_on_a_gpu_are_allowed_and_cpu_needs_nothing():
-    check_settings(TrainSettings(gpu=True), PIPELINE, gpu_available=True)
-    check_settings(TrainSettings(), SILVER, gpu_available=False)
+    check_settings(TrainSettings(gpu=True), PIPELINE, device="cuda")
+    check_settings(TrainSettings(gpu=True), PIPELINE, device="mps")
+    check_settings(TrainSettings(), SILVER, device=None)
 
 
 @pytest.fixture(scope="module")
@@ -401,13 +407,13 @@ def test_evaluating_a_run_that_does_not_exist_stops(world, capsys):
 
 
 def test_the_gpu_flag_stops_without_a_gpu(world, capsys, monkeypatch):
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(cli, "accelerator", lambda: None)
     assert run_cli(world, "train", "--gpu", "--labels", "pipeline") == cli.EXIT_REFUSED
     assert "no GPU" in capsys.readouterr().out
 
 
 def test_the_gpu_flag_stops_on_provisional_labels(world, capsys, monkeypatch):
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(cli, "accelerator", lambda: "mps")
     assert run_cli(world, "train", "--gpu") == cli.EXIT_REFUSED
     assert "provisional" in capsys.readouterr().out
 
@@ -415,3 +421,16 @@ def test_the_gpu_flag_stops_on_provisional_labels(world, capsys, monkeypatch):
 def test_training_on_labels_that_do_not_exist_yet_stops(world, capsys):
     assert run_cli(world, "train", "--labels", "pipeline") == cli.EXIT_REFUSED
     assert "no pipeline labels" in capsys.readouterr().out
+
+
+def test_replies_end_at_the_end_of_the_chat_turn(processor):
+    from taxon.training.model import align_end_tokens
+
+    model = tiny_model(processor, 1)
+    model.generation_config.eos_token_id = processor.tokenizer.convert_tokens_to_ids(
+        "<|endoftext|>"
+    )
+    align_end_tokens(model, processor.tokenizer)
+    end_of_turn = processor.tokenizer.convert_tokens_to_ids("<|im_end|>")
+    assert end_of_turn in model.generation_config.eos_token_id
+    assert model.config.get_text_config().eos_token_id == end_of_turn

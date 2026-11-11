@@ -11,6 +11,7 @@ from pathlib import Path
 
 from taxon.fetch import fetch
 from taxon.gold.pool import assert_disjoint, stratified_order, training_products
+from taxon.hardware import hardware
 from taxon.labeling.attributes import (
     ATTRIBUTE_ANNOTATOR,
     MODES,
@@ -70,6 +71,7 @@ class Workspace:
 
     def write_result(self, path: Path, payload: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {**payload, "hardware": hardware()}
         text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
         path.write_text(text, encoding="utf-8")
 

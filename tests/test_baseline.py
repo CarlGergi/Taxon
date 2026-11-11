@@ -149,8 +149,12 @@ def test_predictions_are_always_labels_it_was_trained_on(c):
 def test_write_result_is_stable_json(tmp_path):
     write_result("x", {"b": 1, "a": "é"}, results_dir=tmp_path)
     text = (tmp_path / "x.json").read_text(encoding="utf-8")
-    assert json.loads(text) == {"a": "é", "b": 1}
-    assert text.index('"a"') < text.index('"b"')
+    saved = json.loads(text)
+    assert saved.pop("hardware")["device"] == "cpu"
+    assert saved == {"a": "é", "b": 1}
+    assert text.index('"a"') < text.index('"b"') < text.index('"hardware"')
+    write_result("y", {"b": 1, "a": "é"}, results_dir=tmp_path)
+    assert (tmp_path / "y.json").read_text(encoding="utf-8") == text
 
 
 def test_products_with_no_body_text_at_all_still_train():

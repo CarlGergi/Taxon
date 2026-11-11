@@ -18,6 +18,7 @@ import torch
 from transformers import LogitsProcessor, LogitsProcessorList
 
 from eval.fields import parse_fields
+from taxon.hardware import hardware
 from taxon.taxonomy import Taxonomy
 from taxon.training.collate import load_images, prompt_text
 from taxon.training.fields import CATEGORY
@@ -137,6 +138,7 @@ def decoding_report(
             valid += category_value(text) in taxonomy
     cut = quantiles(latencies, n=20) if len(latencies) > 1 else latencies * 19
     return {
+        "hardware": hardware(model.device.type),
         "constrained": trie is not None,
         "replies": len(rows),
         "category_asked": asked,

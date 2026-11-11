@@ -19,13 +19,14 @@ from PIL import Image
 from transformers import PrinterCallback, TrainerCallback, set_seed
 from trl import GRPOConfig, GRPOTrainer
 
+from taxon.hardware import hardware
 from taxon.pins import MODEL, MODEL_REVISION, SEED
 from taxon.rl.rewards import RewardWeights, predicted_category, score
 from taxon.taxonomy import Taxonomy, split_path
 from taxon.training.examples import LabelSource
 from taxon.training.fields import CATEGORY
 from taxon.training.model import LORA_RANK, TINY, lora_config
-from taxon.training.train import ADAPTER_DIR, base_model
+from taxon.training.train import ADAPTER_DIR, base_model, run_device
 
 RUN_FILE = "run.json"
 DEPTH_FILE = "depth.json"
@@ -155,7 +156,10 @@ class StepPrinter(TrainerCallback):
             print(f"step {state.global_step}: loss {float(logs['loss']):.4f}", flush=True)
 
 
-def grpo_arguments(settings: GrpoSettings, out_dir: Path, weights: RewardWeights) -> GRPOConfig:
+def grpo_arguments(
+    settings: GrpoSettings, out_dir: Path, weights: RewardWeights, device: str = "cuda"
+) -> GRPOConfig:
+    """vLLM rollouts need CUDA. On Apple's GPU, and on CPU, replies come from plain generation."""
     return GRPOConfig(
         output_dir=str(out_dir),
         max_steps=settings.max_steps,
@@ -171,7 +175,7 @@ def grpo_arguments(settings: GrpoSettings, out_dir: Path, weights: RewardWeights
         use_cpu=not settings.gpu,
         bf16=settings.gpu,
         gradient_checkpointing=settings.gpu,
-        use_vllm=settings.gpu,
+        use_vllm=settings.gpu and device == "cuda",
         vllm_mode="colocate",
         logging_steps=1,
         save_strategy="no",
@@ -199,11 +203,13 @@ def run_grpo(
     sft_dir: Path | None = None,
     weights: RewardWeights | None = None,
     extra_rewards: Sequence[Callable] = (),
+    callbacks: Sequence[TrainerCallback] = (),
 ) -> dict:
     """Train with GRPO and record how. The record holds losses and depths, never an accuracy."""
     weights = weights or RewardWeights()
     out_dir.mkdir(parents=True, exist_ok=True)
     set_seed(settings.seed)
+    device = run_device(settings.gpu)
     model = starting_model(processor, settings, sft_dir)
     depth_log: list[dict] = []
     # TRL generates from left-padded prompts, then processes the prompts again to mark which tokens
@@ -212,7 +218,7 @@ def run_grpo(
     # training crashes once the shift crosses the padding.
     processor.tokenizer.padding_side = "left"
     funcs = [*reward_functions(taxonomy, depth_log), *extra_rewards]
-    arguments = grpo_arguments(settings, out_dir, weights)
+    arguments = grpo_arguments(settings, out_dir, weights, device)
     arguments.reward_weights = [*weights.as_list(), *[1.0] * len(extra_rewards)]
     trainer = GRPOTrainer(
         model=model,
@@ -224,12 +230,16 @@ def run_grpo(
     )
     trainer.remove_callback(PrinterCallback)
     trainer.add_callback(StepPrinter())
+    for callback in callbacks:
+        trainer.add_callback(callback)
     trainer.train()
     trainer.model.save_pretrained(out_dir / ADAPTER_DIR)
     (out_dir / DEPTH_FILE).write_text(json.dumps(depth_log, indent=2), encoding="utf-8")
     plot_depths(depth_log, out_dir / DEPTH_PLOT)
     record = {
         **asdict(settings),
+        "hardware": hardware(device),
+        "rollouts": "vllm" if arguments.use_vllm else "generate",
         "model": f"{MODEL}@{MODEL_REVISION}" if settings.gpu else TINY,
         "fine_tuned_from": str(sft_dir) if sft_dir else None,
         "label_source": source.name,

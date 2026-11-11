@@ -1,6 +1,6 @@
 .PHONY: setup test lint reproduce clean backup gold label-fake label-dry-run label-first \
 	label-gold-pool label-attributes tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu \
-	judge-price judge-sample judge-review judge-agreement judge-pool rl-tiny rl-gpu
+	judge-price judge-sample judge-review judge-agreement judge-pool rl-tiny rl-gpu measure
 
 TARGET ?= 200
 TASKS ?= 100
@@ -9,6 +9,8 @@ CATALOG ?= raw
 RUN ?= qwen-lora
 PRODUCTS ?= 2000
 STEPS ?= 2000
+# Sized from make measure on the M5 Max: about 16 s a step, so 1,600 steps fill an 8-hour night.
+GRPO_STEPS ?= 1600
 RUNS ?= data/bench/runs.jsonl
 
 # Homebrew's rustup keeps cargo off PATH, so ask rustup where this repository's toolchain is. The
@@ -105,7 +107,7 @@ train-tiny:
 	uv run python -m taxon.training train
 	uv run python -m taxon.training evaluate
 
-# The real model on a rented GPU, with labels from the labeling pipeline.
+# The real model on this machine's GPU (Apple or NVIDIA), with labels from the labeling pipeline.
 train-gpu:
 	uv run python -m taxon.training train --gpu --labels pipeline --name $(RUN) --products $(PRODUCTS) \
 		--max-steps $(STEPS)
@@ -116,7 +118,13 @@ rl-tiny:
 	uv run python -m taxon.rl train --from tiny
 	uv run python -m taxon.rl decode
 
-# GRPO on a rented GPU with vLLM rollouts, on top of a fine-tuning run, with pipeline labels.
+# GRPO on the GPU, on top of a fine-tuning run, with pipeline labels. vLLM rollouts on NVIDIA,
+# plain generation on Apple.
 rl-gpu:
 	uv run python -m taxon.rl train --gpu --labels pipeline --from $(RUN) --name $(RUN)-grpo \
-		--products $(PRODUCTS) --max-steps $(STEPS)
+		--products $(PRODUCTS) --max-steps $(GRPO_STEPS)
+
+# A few real fine-tuning and GRPO steps on this machine's GPU, timed, to size overnight runs.
+# Writes results/training_hardware.json. It uses provisional labels only for timing.
+measure:
+	uv run python -m taxon.training measure

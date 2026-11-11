@@ -13,10 +13,18 @@ from peft import get_peft_model
 from transformers import PrinterCallback, TrainerCallback, set_seed
 from trl import SFTConfig, SFTTrainer
 
+from taxon.hardware import accelerator, hardware
 from taxon.pins import MODEL, MODEL_REVISION, SEED
 from taxon.training.collate import FieldCollator
 from taxon.training.examples import LabelSource
-from taxon.training.model import LORA_RANK, TINY, lora_config, real_model, tiny_model
+from taxon.training.model import (
+    LORA_RANK,
+    TINY,
+    align_end_tokens,
+    lora_config,
+    real_model,
+    tiny_model,
+)
 
 RUN_FILE = "run.json"
 TRAIN_IDS_FILE = "train_ids.json"
@@ -39,12 +47,15 @@ class TrainSettings:
     seed: int = SEED
 
 
-def check_settings(settings: TrainSettings, source: LabelSource, gpu_available: bool) -> None:
-    """A rented GPU is for real labels. Provisional ones are only for testing the pipeline."""
+def check_settings(settings, source: LabelSource, device: str | None) -> None:
+    """A real run is for real labels. Provisional ones are only for testing the pipeline.
+
+    `device` is the accelerator found here: "cuda", "mps", or None.
+    """
     if not settings.gpu:
         return
-    if not gpu_available:
-        raise RunRefused("--gpu was given, but no GPU is available")
+    if device is None:
+        raise RunRefused("--gpu was given, but no GPU is available, NVIDIA or Apple")
     if source.provisional:
         raise RunRefused(f"{source.name} labels are provisional, so they do not get a GPU run")
 
@@ -58,7 +69,7 @@ class LossPrinter(TrainerCallback):
             print(f"step {state.global_step}: loss {float(logs['loss']):.3f}", flush=True)
 
 
-def training_arguments(settings: TrainSettings, out_dir: Path) -> SFTConfig:
+def training_arguments(settings: TrainSettings, out_dir: Path, device: str = "cuda") -> SFTConfig:
     return SFTConfig(
         output_dir=str(out_dir),
         max_steps=settings.max_steps,
@@ -74,12 +85,20 @@ def training_arguments(settings: TrainSettings, out_dir: Path) -> SFTConfig:
         report_to="none",
         disable_tqdm=True,
         remove_unused_columns=False,
-        dataloader_pin_memory=settings.gpu,
+        dataloader_pin_memory=settings.gpu and device == "cuda",
         dataset_kwargs={"skip_prepare_dataset": True},
     )
 
 
-def fine_tune(rows: Sequence[dict], processor, model, settings: TrainSettings, out_dir: Path):
+def fine_tune(
+    rows: Sequence[dict],
+    processor,
+    model,
+    settings: TrainSettings,
+    out_dir: Path,
+    device: str,
+    callbacks: Sequence[TrainerCallback] = (),
+):
     """Train an adapter and save it under `out_dir`. Returns the loss at each step."""
     set_seed(settings.seed)
     peft_model = get_peft_model(model, lora_config(settings.lora_rank))
@@ -88,20 +107,31 @@ def fine_tune(rows: Sequence[dict], processor, model, settings: TrainSettings, o
     # others, which changes what a chat template sees.
     trainer = SFTTrainer(
         model=peft_model,
-        args=training_arguments(settings, out_dir),
+        args=training_arguments(settings, out_dir, device),
         train_dataset=Dataset.from_dict({"row": list(range(len(rows)))}),
         data_collator=lambda batch: collate([rows[item["row"]] for item in batch]),
         processing_class=processor,
     )
     trainer.remove_callback(PrinterCallback)
     trainer.add_callback(LossPrinter())
+    for callback in callbacks:
+        trainer.add_callback(callback)
     trainer.train()
     peft_model.save_pretrained(out_dir / ADAPTER_DIR)
     return [entry["loss"] for entry in trainer.state.log_history if "loss" in entry]
 
 
+def run_device(gpu: bool) -> str:
+    """Where a run trains: the accelerator here for a real run, the CPU otherwise."""
+    return (accelerator() or "cpu") if gpu else "cpu"
+
+
 def base_model(processor, gpu: bool, seed: int):
-    return real_model() if gpu else tiny_model(processor, seed)
+    if not gpu:
+        return tiny_model(processor, seed)
+    model = real_model(run_device(True))
+    align_end_tokens(model, processor.tokenizer)
+    return model
 
 
 def run_training(
@@ -111,13 +141,16 @@ def run_training(
     source: LabelSource,
     out_dir: Path,
     model=None,
+    callbacks: Sequence[TrainerCallback] = (),
 ) -> dict:
     """Train and record how the run was made. The record holds losses, and never any accuracy."""
     out_dir.mkdir(parents=True, exist_ok=True)
+    device = run_device(settings.gpu)
     model = base_model(processor, settings.gpu, settings.seed) if model is None else model
-    losses = fine_tune(rows, processor, model, settings, out_dir)
+    losses = fine_tune(rows, processor, model, settings, out_dir, device, callbacks)
     record = {
         **asdict(settings),
+        "hardware": hardware(device),
         "model": f"{MODEL}@{MODEL_REVISION}" if settings.gpu else TINY,
         "label_source": source.name,
         "provisional_labels": source.provisional,

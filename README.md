@@ -170,8 +170,8 @@ make train-gpu RUN=name PRODUCTS=2000 STEPS=2000
 ```
 
 `make train-tiny` runs on CPU with tiny random weights and provisional labels. It shows the pipeline
-works, and its numbers are not results. `make train-gpu` fine-tunes the real model with LoRA, needs a
-GPU, and refuses provisional labels. Accuracy is only ever computed against hand labels, with
+works, and its numbers are not results. `make train-gpu` fine-tunes the real model with LoRA on a GPU,
+Apple's through MPS or NVIDIA's through CUDA, and refuses provisional labels. Accuracy is only ever computed against hand labels, with
 `python -m taxon.training evaluate --on gold`.
 
 ## Reinforcement learning
@@ -201,7 +201,14 @@ make rl-gpu RUN=name PRODUCTS=2000 STEPS=500
 
 `make rl-tiny` runs on CPU with tiny random weights and provisional labels, then compares free and
 constrained decoding on validity and latency. Its numbers are not results. `make rl-gpu` uses the
-real model with vLLM rollouts, needs a GPU, and refuses provisional labels.
+real model on a GPU and refuses provisional labels. Rollouts use vLLM on NVIDIA and plain generation
+on Apple, where vLLM does not run.
+
+### Hardware
+
+Training runs on an Apple M5 Max through PyTorch's MPS backend, in BF16. `make measure` times a few
+real fine-tuning and GRPO steps there and sizes overnight runs from them. Every result file records
+the machine and device it came from. The quantization study needs an NVIDIA GPU and runs later.
 
 ## Results
 

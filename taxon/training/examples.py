@@ -88,6 +88,7 @@ def load_labeled(
     usable.sort(key=lambda p: seeded_hash(seed, f"training|{p['parent_asin']}"))
     chosen = usable[:limit]
     assert_disjoint((p["parent_asin"] for p in chosen), gold_queue)
+
     def attributes(product: Mapping) -> dict[str, str]:
         row = rows[product["parent_asin"]]
         if "attributes" in row:

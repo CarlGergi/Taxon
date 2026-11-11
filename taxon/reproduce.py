@@ -28,6 +28,7 @@ from taxon.gold.pool import (
 )
 from taxon.gold.server import LABELS_PATH
 from taxon.gold.store import GoldStore
+from taxon.hardware import hardware
 from taxon.labeling.attributes import EXACT, MODES
 from taxon.labeling.report import agreement_report, arbitrator_score
 from taxon.labeling.retrieval import CandidateRetriever, build_shortlists, recall_at
@@ -59,6 +60,7 @@ TRAINING_LABELS = DATA_DIR / "labeling" / "training_labels.jsonl"
 
 def write_result(name: str, payload: dict, results_dir: Path = RESULTS_DIR) -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
+    payload = {**payload, "hardware": hardware()}
     text = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
     (results_dir / f"{name}.json").write_text(text, encoding="utf-8")
     print(f"wrote results/{name}.json", flush=True)

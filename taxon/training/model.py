@@ -68,10 +68,21 @@ def tiny_model(processor, seed: int):
     return AutoModelForImageTextToText.from_config(config, dtype=torch.float32)
 
 
-def real_model():
+def real_model(device: str):
+    """The pinned model in BF16, on "cuda" or "mps"."""
     return AutoModelForImageTextToText.from_pretrained(
-        MODEL, revision=MODEL_REVISION, dtype=torch.bfloat16, device_map={"": 0}
+        MODEL, revision=MODEL_REVISION, dtype=torch.bfloat16, device_map={"": device}
     )
+
+
+def align_end_tokens(model, tokenizer) -> None:
+    """Stop replies at the chat turn's end. The pinned config ends text at <|endoftext|>, but chat
+    replies, and the labels training scores, end at <|im_end|>, so plain generation would run on."""
+    end_of_turn = tokenizer.convert_tokens_to_ids("<|im_end|>")
+    end_of_text = tokenizer.convert_tokens_to_ids("<|endoftext|>")
+    model.generation_config.eos_token_id = [end_of_turn, end_of_text]
+    model.generation_config.pad_token_id = tokenizer.pad_token_id
+    model.config.get_text_config().eos_token_id = end_of_turn
 
 
 def lora_config(rank: int = LORA_RANK) -> LoraConfig:
