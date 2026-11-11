@@ -206,6 +206,11 @@ def run_grpo(
     set_seed(settings.seed)
     model = starting_model(processor, settings, sft_dir)
     depth_log: list[dict] = []
+    # TRL generates from left-padded prompts, then processes the prompts again to mark which tokens
+    # are image tokens, padding with the tokenizer's own side. Unless that side is also left, image
+    # markers land beside the image tokens instead of on them: position ids go silently wrong, or
+    # training crashes once the shift crosses the padding.
+    processor.tokenizer.padding_side = "left"
     funcs = [*reward_functions(taxonomy, depth_log), *extra_rewards]
     arguments = grpo_arguments(settings, out_dir, weights)
     arguments.reward_weights = [*weights.as_list(), *[1.0] * len(extra_rewards)]

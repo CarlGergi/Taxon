@@ -355,3 +355,31 @@ def test_the_gpu_flag_stops_on_provisional_labels(world, capsys, monkeypatch):
 
 def test_pipeline_labels_are_not_provisional():
     assert PIPELINE.provisional is False
+
+
+def test_image_markers_sit_on_the_image_tokens_in_grpo(processor, taxonomy, tmp_path, monkeypatch):
+    """Prompts of very different lengths need lots of padding, which once moved the markers."""
+    from transformers.models.qwen3_5 import modeling_qwen3_5
+
+    original = modeling_qwen3_5.Qwen3_5Model.get_rope_index
+    checked = []
+
+    def get_rope_index(self, input_ids, mm_token_type_ids, *args, **kwargs):
+        image = processor.tokenizer.convert_tokens_to_ids("<|image_pad|>")
+        assert torch.equal(input_ids == image, mm_token_type_ids == 1)
+        checked.append(input_ids.shape[0])
+        return original(self, input_ids, mm_token_type_ids, *args, **kwargs)
+
+    monkeypatch.setattr(modeling_qwen3_5.Qwen3_5Model, "get_rope_index", get_rope_index)
+    path = tmp_path / "a.jpg"
+    Image.new("RGB", (48, 32), (9, 9, 9)).save(path)
+    items = [
+        LabeledProduct({**product(f"L{i}"), "title": "tote " + "long words " * (40 * i)}, TOTES, {})
+        for i in range(4)
+    ]
+    rows = training_examples(items, taxonomy, 7, lambda _p: str(path))
+    gold = {item.asin: item.category for item in items}
+    two_prompts_a_step = GrpoSettings(max_steps=1, batch_size=8, max_completion_length=8)
+    run_grpo(rows, processor, taxonomy, two_prompts_a_step, SILVER, tmp_path / "run", gold)
+    assert checked
+
