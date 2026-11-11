@@ -9,9 +9,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from PIL import Image
 
+from taxon.labeling.budget import CAPS
 from taxon.labeling.env import MissingKey, Secrets
 from taxon.labeling.llm import CHOICE_SCHEMA, LLMRequest, ModelConfig, Status
-from taxon.labeling.pipeline import ANNOTATORS, ARBITRATOR
+from taxon.labeling.pipeline import ANNOTATORS, ARBITRATOR, GEMINI
 from taxon.labeling.vendors import (
     ANTHROPIC_URL,
     GOOGLE_URL,
@@ -22,7 +23,7 @@ from taxon.labeling.vendors import (
     build_clients,
 )
 
-HAIKU, LUNA, FLASH = ANNOTATORS
+HAIKU, LUNA, FLASH = (*ANNOTATORS, GEMINI)
 KEY = "test-key-should-not-leak"
 
 
@@ -535,14 +536,21 @@ def test_a_shell_variable_cannot_redirect_keys(monkeypatch):
 
 def test_build_clients_names_the_missing_key():
     with pytest.raises(MissingKey, match="OPENAI_API_KEY"):
-        build_clients(Secrets({"ANTHROPIC_API_KEY": "a", "GEMINI_API_KEY": "b"}))
+        build_clients(Secrets({"ANTHROPIC_API_KEY": "a"}), ("anthropic", "openai"))
 
 
-def test_build_clients_makes_all_three():
-    clients = build_clients(
-        Secrets({"ANTHROPIC_API_KEY": "a", "OPENAI_API_KEY": "b", "GEMINI_API_KEY": "c"})
-    )
-    assert set(clients) == {"anthropic", "openai", "google"}
+def test_build_clients_makes_the_named_vendors():
+    secrets = Secrets({"ANTHROPIC_API_KEY": "a", "OPENAI_API_KEY": "b", "GEMINI_API_KEY": "c"})
+    assert set(build_clients(secrets, ("anthropic", "openai", "google"))) == {
+        "anthropic",
+        "openai",
+        "google",
+    }
+
+
+def test_an_unused_vendor_needs_no_key():
+    clients = build_clients(Secrets({"ANTHROPIC_API_KEY": "a", "OPENAI_API_KEY": "b"}), CAPS)
+    assert set(clients) == {"anthropic", "openai"}
 
 
 def test_keys_do_not_appear_in_request_bodies(server):

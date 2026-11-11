@@ -1,8 +1,9 @@
-"""Label products with three annotators and an arbitrator.
+"""Label products with two annotators and an arbitrator.
 
 Each annotator picks from a retrieved shortlist or says none. Only a none triggers a top-down
-walk. Answers are accepted when at least two annotators answered and all who answered agree. Only
-a real conflict goes to the arbitrator, who may abstain.
+walk. Answers are accepted when at least two annotators answered and all who answered agree. With
+two annotators that means both answered alike; a conflict or a single answer goes to the
+arbitrator, who may abstain. The labeler takes any number of annotators.
 """
 
 from __future__ import annotations
@@ -21,10 +22,12 @@ from taxon.labeling.prompts import (
 from taxon.labeling.runner import BatchRunner
 from taxon.taxonomy import Taxonomy
 
+# Gemini was the third annotator. It is left out for lack of credit, and can come back by adding
+# GEMINI back to this tuple and a "google" cap.
+GEMINI = ModelConfig("google", "gemini-3.5-flash-lite", max_tokens=1_024, effort="low")
 ANNOTATORS = (
     ModelConfig("anthropic", "claude-haiku-5-5", max_tokens=1_024, effort="low"),
     ModelConfig("openai", "gpt-6-luna", max_tokens=1_024, effort="low"),
-    ModelConfig("google", "gemini-3.5-flash-lite", max_tokens=1_024, effort="low"),
 )
 # Sonnet at low effort is the cheap default. Move to Opus only if scoring against the gold set
 # shows Sonnet is clearly worse.

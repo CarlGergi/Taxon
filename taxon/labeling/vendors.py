@@ -1,4 +1,4 @@
-"""Batch clients for the three vendors, each behind the same small interface.
+"""Batch clients for three vendors, each behind the same small interface.
 
 Base URLs are passed explicitly so that a variable in the surrounding shell can never send a key
 somewhere else.
@@ -10,7 +10,7 @@ import base64
 import hashlib
 import json
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import anthropic
@@ -293,10 +293,14 @@ class GoogleBatchClient:
         return LLMResult(key, Status.OK, text, usage)
 
 
-def build_clients(secrets: Secrets, charge: Charge | None = None) -> dict:
-    """The real clients. Raises MissingKey, naming the key, if one is not set."""
-    return {
-        "anthropic": AnthropicBatchClient(secrets.require("ANTHROPIC_API_KEY")),
-        "openai": OpenAIBatchClient(secrets.require("OPENAI_API_KEY")),
-        "google": GoogleBatchClient(secrets.require("GEMINI_API_KEY"), charge=charge),
+def build_clients(secrets: Secrets, vendors: Iterable[str], charge: Charge | None = None) -> dict:
+    """The real clients for the vendors in use. Raises MissingKey, naming the key, if one is unset.
+
+    Only the named vendors' keys are needed, so an unused vendor needs no key.
+    """
+    makers = {
+        "anthropic": lambda: AnthropicBatchClient(secrets.require("ANTHROPIC_API_KEY")),
+        "openai": lambda: OpenAIBatchClient(secrets.require("OPENAI_API_KEY")),
+        "google": lambda: GoogleBatchClient(secrets.require("GEMINI_API_KEY"), charge=charge),
     }
+    return {vendor: makers[vendor]() for vendor in vendors}

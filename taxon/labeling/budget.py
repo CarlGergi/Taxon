@@ -11,7 +11,7 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-CAPS = {"anthropic": 20.0, "openai": 10.0, "google": 10.0}
+CAPS = {"anthropic": 20.0, "openai": 3.0}
 
 
 class BudgetExceeded(RuntimeError):

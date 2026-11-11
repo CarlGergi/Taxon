@@ -2,11 +2,11 @@ import json
 
 import pytest
 
-from taxon.labeling.budget import Budget, BudgetExceeded
+from taxon.labeling.budget import CAPS, Budget, BudgetExceeded
 from taxon.labeling.cache import ResponseCache
 from taxon.labeling.fakes import FakeBatchClient, answer, demo_responder
 from taxon.labeling.llm import LLMResult, ModelConfig, Status, Usage
-from taxon.labeling.pipeline import ANNOTATORS, ARBITRATOR, Labeler
+from taxon.labeling.pipeline import ANNOTATORS, ARBITRATOR, GEMINI, Labeler
 from taxon.labeling.pricing import price_for
 from taxon.labeling.prompts import (
     arbitrate_request,
@@ -19,6 +19,8 @@ from taxon.labeling.report import (
     agreement_report,
     arbitrator_score,
     cost_projection,
+    format_arbitration_share,
+    format_first_run_total,
     format_projection,
 )
 from taxon.labeling.runner import BatchRunner
@@ -68,17 +70,19 @@ def choosing(by_vendor):
 
 @pytest.fixture
 def build(tmp_path, taxonomy):
-    def _build(by_vendor):
+    """The labeler takes any number of annotators. These tests use three, Gemini included."""
+
+    def _build(by_vendor, annotators=(*ANNOTATORS, GEMINI)):
         respond = choosing(by_vendor)
         clients = {v: FakeBatchClient(v, respond) for v in ("anthropic", "openai", "google")}
         runner = BatchRunner(
             clients,
             ResponseCache(tmp_path / "c"),
-            Budget(tmp_path / "l"),
+            Budget(tmp_path / "l", {**CAPS, "google": 10.0}),
             tmp_path / "j",
             sleep=lambda _: None,
         )
-        return Labeler(taxonomy, runner), clients
+        return Labeler(taxonomy, runner, annotators), clients
 
     return _build
 
@@ -346,12 +350,36 @@ def test_hitting_a_cap_stops_and_a_later_run_finishes_without_repaying(tmp_path,
 
 
 def test_every_model_in_the_pipeline_has_a_price():
-    for config in [*ANNOTATORS, ARBITRATOR]:
+    for config in [*ANNOTATORS, GEMINI, ARBITRATOR]:
         assert price_for(config)
 
 
-def test_the_annotators_come_from_three_vendors():
-    assert sorted(c.vendor for c in ANNOTATORS) == ["anthropic", "google", "openai"]
+def test_the_annotators_are_claude_and_openai_without_gemini():
+    assert sorted(c.vendor for c in ANNOTATORS) == ["anthropic", "openai"]
+    assert set(CAPS) == {"anthropic", "openai"}
+
+
+def test_with_two_annotators_agreement_is_unanimous(build):
+    labeler, clients = build(agreeing(TOTES), ANNOTATORS)
+    [row] = labeler.label([product()], {"A1": CANDIDATES})
+    assert (row["path"], row["source"]) == (TOTES, "unanimous")
+    assert set(row["annotators"]) == {"anthropic", "openai"}
+    assert clients["google"].requests_sent == 0
+
+
+def test_with_two_annotators_a_conflict_goes_to_the_arbitrator(build):
+    by_vendor = {"anthropic": TOTES, "openai": KNIVES, "arbitrator": KNIVES}
+    labeler, _ = build(by_vendor, ANNOTATORS)
+    [row] = labeler.label([product()], {"A1": CANDIDATES})
+    assert (row["path"], row["source"]) == (KNIVES, "arbitrated")
+
+
+def test_with_two_annotators_a_lone_answer_goes_to_the_arbitrator(build):
+    labeler, clients = build(agreeing(TOTES, arbitrator=TOTES), ANNOTATORS)
+    clients["openai"].responder = lambda r: LLMResult(r.key, Status.REFUSED)
+    [row] = labeler.label([product()], {"A1": CANDIDATES})
+    assert (row["path"], row["source"]) == (TOTES, "arbitrated")
+    assert row["proposals"] == [TOTES]
 
 
 def test_the_demo_responder_stays_in_range_and_is_deterministic(taxonomy):
@@ -441,8 +469,8 @@ def test_an_empty_run_is_rejected():
 
 def test_projection_scales_per_product_cost_and_flags_a_cap():
     rows = [
-        row_with(["A"] * 3, cost={"anthropic": 0.01, "openai": 0.001, "google": 0.002}),
-        row_with(["A"] * 3, cost={"anthropic": 0.03, "openai": 0.001, "google": 0.002}),
+        row_with(["A"] * 3, cost={"anthropic": 0.01, "openai": 0.0002, "google": 0.002}),
+        row_with(["A"] * 3, cost={"anthropic": 0.03, "openai": 0.0002, "google": 0.002}),
     ]
     report = cost_projection(rows, {"first": 2_000, "all": 9_500}, {"anthropic": 1.0})
     anthropic = report["anthropic"]
@@ -486,6 +514,8 @@ def test_arbitrator_stats_are_reported():
     refused = refused | {"arbitrator_status": "refused"}
     report = agreement_report([row_with(["A"] * 3), ran, refused])
     assert report["arbitrator"] == {"ran": 2, "ok": 1, "refused": 1}
+    assert report["sent_to_arbitrator"] == pytest.approx(2 / 3)
+    assert format_arbitration_share(report) == "Sent to the arbitrator: 2 of 3 products (67%)"
 
 
 def disputed(asin, paths, final):
@@ -504,6 +534,23 @@ def test_the_arbitrator_is_scored_against_gold_and_a_majority_vote():
     assert score["disagreements_with_hand_labels"] == 3
     assert score["arbitrator"]["exact_leaf_accuracy"] == pytest.approx(1 / 3)
     assert score["majority_vote"]["exact_leaf_accuracy"] == 0.0
+    alone = score["each_annotator_alone"]
+    assert alone["anthropic"]["exact_leaf_accuracy"] == pytest.approx(1 / 3)
+    assert alone["google"]["exact_leaf_accuracy"] == pytest.approx(2 / 3)
+
+
+def test_with_two_annotators_the_arbitrator_is_compared_with_each_one_alone():
+    def two(asin, paths, final):
+        row = disputed(asin, [*paths, None], final)
+        del row["annotators"]["google"]
+        return row
+
+    rows = [two("A", ["X", "Y"], "Y"), two("B", ["X", None], "X")]
+    score = arbitrator_score(rows, {"A": "Y", "B": "X"})
+    assert score["arbitrator"]["exact_leaf_accuracy"] == 1.0
+    assert score["each_annotator_alone"]["anthropic"]["exact_leaf_accuracy"] == 0.5
+    assert score["each_annotator_alone"]["openai"]["exact_leaf_accuracy"] == 0.5
+    assert "majority_vote" not in score
 
 
 def test_arbitrator_scoring_waits_for_a_hand_labeled_disagreement():
@@ -523,3 +570,14 @@ def test_the_report_is_json_serializable():
 def test_usage_defaults_cost_nothing():
     assert Usage() == Usage(0, 0, 0, 0)
     assert isinstance(ANNOTATORS[0], ModelConfig)
+
+
+def test_the_first_run_total_adds_every_vendor():
+    rows = [
+        row_with(["A"] * 3, cost={"anthropic": 0.002, "openai": 0.0002}),
+        row_with(["A"] * 3, cost={"anthropic": 0.002, "openai": 0.0002}),
+    ]
+    report = cost_projection(rows, {"first_run": 2_000}, {})
+    assert format_first_run_total(report) == (
+        "First run, all vendors (2,000 products): $4.40, up to $4.40"
+    )

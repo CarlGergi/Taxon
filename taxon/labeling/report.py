@@ -80,6 +80,7 @@ def agreement_report(rows: list[dict]) -> dict:
         "sources": dict(sorted(sources.items())),
         "labeled": sum(bool(row["path"]) for row in rows) / n,
         "arbitrator": {"ran": sum(arbitrated.values()), **dict(sorted(arbitrated.items()))},
+        "sent_to_arbitrator": sum(arbitrated.values()) / n,
         "pairwise_exact": {p: pair_exact[p] / pair_seen[p] for p in sorted(pair_seen)},
         "pairwise_by_level": {
             str(level): level_agree[level] / level_seen[level] for level in sorted(level_seen)
@@ -102,10 +103,11 @@ def agreement_report(rows: list[dict]) -> dict:
 
 
 def arbitrator_score(rows: list[dict], gold: Mapping[str, str]) -> dict | None:
-    """How the arbitrator does on real disagreements, against hand labels and a majority vote.
+    """How the arbitrator does on real disagreements, against hand labels and free alternatives.
 
-    A majority vote costs nothing, so an arbitrator that cannot beat it is not earning its price.
-    Abstentions count as wrong for both. Returns None until a disagreement has a hand label.
+    Taking one annotator's answer costs nothing more, and with three or more annotators so does a
+    majority vote, so an arbitrator that cannot beat them is not earning its price. Abstentions
+    count as wrong for all. Returns None until a disagreement has a hand label.
     """
     disputed = [r for r in rows if "arbitrator_status" in r and r["parent_asin"] in gold]
     if not disputed:
@@ -117,11 +119,18 @@ def arbitrator_score(rows: list[dict], gold: Mapping[str, str]) -> dict | None:
         top = votes.most_common(1)
         return top[0][0] if top and top[0][1] >= 2 else None
 
-    return {
+    vendors = sorted(disputed[0]["annotators"])
+    score = {
         "disagreements_with_hand_labels": len(disputed),
         "arbitrator": evaluate(golds, [r["path"] for r in disputed]),
-        "majority_vote": evaluate(golds, [majority(r) for r in disputed]),
+        "each_annotator_alone": {
+            v: evaluate(golds, [r["annotators"][v]["path"] for r in disputed]) for v in vendors
+        },
     }
+    # Two annotators in a dispute never share an answer, so a vote needs at least three.
+    if len(vendors) >= 3:
+        score["majority_vote"] = evaluate(golds, [majority(r) for r in disputed])
+    return score
 
 
 def cost_projection(rows: list[dict], targets: dict[str, int], spent: dict[str, float]) -> dict:
@@ -160,6 +169,19 @@ def cost_projection(rows: list[dict], targets: dict[str, int], spent: dict[str, 
             }
         report[vendor] = entry
     return report
+
+
+def format_arbitration_share(agreement: dict) -> str:
+    ran, n = agreement["arbitrator"]["ran"], agreement["n"]
+    return f"Sent to the arbitrator: {ran} of {n} products ({agreement['sent_to_arbitrator']:.0%})"
+
+
+def format_first_run_total(report: dict) -> str:
+    """The first run's projected cost over every vendor."""
+    estimate = sum(entry["first_run"]["estimate"] for entry in report.values())
+    upper = sum(entry["first_run"]["upper_95"] for entry in report.values())
+    products = next(iter(report.values()))["first_run"]["products"]
+    return f"First run, all vendors ({products:,} products): ${estimate:.2f}, up to ${upper:.2f}"
 
 
 def format_projection(report: dict) -> str:

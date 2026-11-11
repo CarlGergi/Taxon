@@ -59,7 +59,7 @@ def _runner(space: Judging, fake: bool) -> BatchRunner:
     if fake:
         clients = {v: FakeBatchClient(v) for v in CAPS}
     else:
-        clients = build_clients(load_secrets(), charge=budget.charge)
+        clients = build_clients(load_secrets(), CAPS, charge=budget.charge)
     return BatchRunner(
         clients,
         ResponseCache(space.labeling / "responses"),

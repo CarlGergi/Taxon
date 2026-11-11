@@ -29,7 +29,9 @@ from taxon.labeling.report import (
     attribute_projection,
     attribute_report,
     cost_projection,
+    format_arbitration_share,
     format_attribute_projection,
+    format_first_run_total,
     format_projection,
 )
 from taxon.labeling.runner import BatchRunner
@@ -94,7 +96,7 @@ def _build_labeler(taxonomy: Taxonomy, space: Workspace, fake: bool, secrets: Se
         tracer = None
         image_for = None
     else:
-        clients = build_clients(secrets, charge=budget.charge)
+        clients = build_clients(secrets, CAPS, charge=budget.charge)
         tracer = build_tracer(secrets)
         image_for = ImageStore(space.images).image_for
     runner = BatchRunner(clients, ResponseCache(space.cache), budget, space.journal, tracer)
@@ -328,6 +330,8 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
             for entry in report["attribute_cost"].values():
                 print(format_attribute_projection(entry))
             print(json.dumps(report["agreement"]["agreement"], indent=2))
+            print(format_arbitration_share(report["agreement"]))
+            print(format_first_run_total(report["cost"]))
             print(f"Full report: {space.dry_run}")
         elif args.attributes:
             report = run_attributes(args.fake, space, secrets)

@@ -31,15 +31,29 @@ into `results/`, and takes a few minutes on a CPU. It never calls a paid API and
 
 ## Labeling
 
-Copy `.env.example` to `.env` and fill in the keys. Each annotator picks from a shortlist of up to
-50 paths or says none, and only a none starts a walk down the tree. A stronger model settles real
-disagreements or abstains, and is scored against the hand labels. Every response is cached on disk,
-and hard caps of $20 for Anthropic, $10 for OpenAI and $10 for Google stop a run before they are
-passed.
+Copy `.env.example` to `.env` and fill in the Anthropic and OpenAI keys. Each of two annotators
+picks from a shortlist of up to 50 paths or says none, and only a none starts a walk down the tree.
+A label is accepted when both annotators give the same answer. A stronger model settles every
+disagreement, and every product only one annotator answered, or abstains. Every response is cached
+on disk, and hard caps of $20 for Anthropic and $3 for OpenAI stop a run before they are passed.
+
+There are two annotators, not three, to keep the cost down: a third vendor means a third bill, and
+the arbitrator already covers what a third vote would decide. The price is that every disagreement
+goes to the arbitrator, with no majority vote to fall back on. The labeler takes any number of
+annotators, and the Gemini client is kept, unused, so a third can be added back.
+
+| Measure | Result |
+| --- | --- |
+| Products sent to the arbitrator | pending the first labeling run |
+| Arbitrator accuracy on disputed products, against the hand labels | pending the gold set |
+
+The first comes from the agreement report of each labeling run. The second is the `arbitration`
+entry of `results/gold_eval.json`, written by `make reproduce` once hand-labeled products include
+disagreements; it sets the arbitrator beside taking either annotator's answer alone.
 
 | Role | Model |
 | --- | --- |
-| Annotators | `claude-haiku-5-5`, `gpt-6-luna`, `gemini-3.5-flash-lite` |
+| Annotators | `claude-haiku-5-5`, `gpt-6-luna` |
 | Arbitrator | `claude-sonnet-5-5` |
 
 ```bash
