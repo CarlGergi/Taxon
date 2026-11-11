@@ -17,11 +17,12 @@ from pathlib import Path
 from taxon.pins import DATA_DIR, ROOT
 
 DEFAULT_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/taxon-backups"
+# Relative to the repository being backed up.
 SOURCES = (
-    DATA_DIR / "gold",
-    DATA_DIR / "bench",
-    DATA_DIR / "labeling" / "responses",
-    DATA_DIR / "labeling" / "ledger.jsonl",
+    DATA_DIR.relative_to(ROOT) / "gold",
+    DATA_DIR.relative_to(ROOT) / "bench",
+    DATA_DIR.relative_to(ROOT) / "labeling" / "responses",
+    DATA_DIR.relative_to(ROOT) / "labeling" / "ledger.jsonl",
 )
 _NEVER = {".env"}
 
@@ -66,7 +67,8 @@ def create_backup(
     destination = destination.expanduser().resolve()
     if destination.is_relative_to(root.resolve()):
         raise ValueError(f"a backup must go outside the repository, not in {destination}")
-    files = _files_under([*SOURCES, *locally_excluded(root)] if sources is None else sources)
+    defaults = [*(root / source for source in SOURCES), *locally_excluded(root)]
+    files = _files_under(defaults if sources is None else sources)
     if not files:
         return None
     destination.mkdir(parents=True, exist_ok=True)

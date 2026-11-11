@@ -117,7 +117,7 @@ def test_an_explicit_source_list_is_used_as_given(tmp_path):
 
 
 def test_the_default_sources_cover_gold_and_the_response_cache():
-    relative = {str(p.relative_to(ROOT)) for p in backup.SOURCES}
+    relative = {str(p) for p in backup.SOURCES}
     assert {"data/gold", "data/labeling/responses"} <= relative
     assert not any("labeling_fake" in s for s in relative)
 
@@ -151,3 +151,11 @@ def test_the_command_says_when_there_is_nothing_yet(monkeypatch, tmp_path, capsy
     monkeypatch.setattr(backup, "create_backup", lambda _destination: None)
     assert backup.main(["--dir", str(tmp_path / "out")]) == 0
     assert "Nothing to back up" in capsys.readouterr().out
+
+
+def test_the_default_sources_come_from_the_repository_being_backed_up(tmp_path):
+    root = excluded_repo(tmp_path, "")
+    (root / "data" / "labeling").mkdir(parents=True)
+    (root / "data" / "labeling" / "ledger.jsonl").write_text("{}\n")
+    target = create_backup(tmp_path / "out", root=root)
+    assert names(target) == {"data/labeling/ledger.jsonl"}
