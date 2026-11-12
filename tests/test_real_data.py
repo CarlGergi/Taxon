@@ -324,3 +324,33 @@ def test_the_readme_reports_the_current_gold_results():
     ]
     missing = [line for line in expected if line not in readme]
     assert not missing, f"README is out of date: {missing}"
+
+
+def test_the_readme_reports_the_current_ladder():
+    gold_path = RESULTS_DIR / "gold_eval.json"
+    if not gold_path.exists() or "ladder" not in json.loads(gold_path.read_text()):
+        pytest.skip("no trained model has been asked about the gold products yet")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    ladder = json.loads(gold_path.read_text(encoding="utf-8"))["ladder"]
+    names = {"qwen-lora": "Fine-tuned", "qwen-lora-grpo": "Fine-tuned, then GRPO"}
+
+    def share(value, bounds):
+        return f"{value * 100:.1f}% [{bounds[0] * 100:.1f}, {bounds[1] * 100:.1f}]"
+
+    def points(entry):
+        low, high = entry["ci95"]
+        return f"{entry['difference'] * 100:.1f} [{low * 100:.1f}, {high * 100:.1f}]"
+
+    expected = []
+    for rung in ladder["rungs"]:
+        category = rung["category"]
+        top = category["levels"][0]
+        expected.append(
+            f"| {names[rung['name']]} | {rung['decoding']} | "
+            f"{share(category['exact_leaf_accuracy'], category['exact_leaf_accuracy_ci95'])} | "
+            f"{share(top['micro_recall'], top['micro_recall_ci95'])} | "
+            f"{share(category['invalid_rate'], category['invalid_rate_ci95'])} | "
+            f"{points(rung['minus_pipeline_labels'])} |"
+        )
+    missing = [line for line in expected if line not in readme]
+    assert not missing, f"README is out of date: {missing}"

@@ -1,5 +1,5 @@
 .PHONY: setup test lint reproduce clean backup gold label-fake label-dry-run label-first \
-	label-gold-pool label-attributes tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu \
+	label-gold-pool label-attributes ladder tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu \
 	judge-price judge-sample judge-review judge-agreement judge-pool rl-tiny rl-gpu measure shop-price shop enrich-price enrich enrich-taxon bench-score quant-prepare quant
 
 TARGET ?= 50
@@ -9,6 +9,7 @@ CATALOG ?= raw
 CONDITION ?= raw
 RUNS ?= 3
 QUANT_RUN ?= data/rl/qwen-lora-grpo
+LADDER_RUN ?= data/training/qwen-lora
 RUN ?= qwen-lora
 PRODUCTS ?= 2000
 STEPS ?= 2000
@@ -162,6 +163,11 @@ rl-tiny:
 rl-gpu:
 	uv run python -m taxon.rl train --gpu --labels pipeline --from $(RUN) --name $(RUN)-grpo \
 		--products $(PRODUCTS) --max-steps $(GRPO_STEPS)
+
+# Ask a trained run for the category of every hand-labeled product, free and trie-constrained,
+# and save the answers to data/ladder/. make reproduce scores them against the pipeline labels.
+ladder:
+	uv run python -m taxon.ladder $(LADDER_RUN)
 
 # A few real fine-tuning and GRPO steps on this machine's GPU, timed, to size overnight runs.
 # Writes results/training_hardware.json. It uses provisional labels only for timing.

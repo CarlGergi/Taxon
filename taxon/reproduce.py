@@ -32,6 +32,7 @@ from taxon.hardware import hardware
 from taxon.labeling.attributes import EXACT, MODES, SHORTLIST
 from taxon.labeling.report import agreement_report, arbitrator_score
 from taxon.labeling.retrieval import CandidateRetriever, build_shortlists, recall_at
+from taxon.ladder import LADDER_DIR, ladder_report, saved_rungs
 from taxon.pins import (
     AMAZON_FILE_SIZES,
     AMAZON_REVISION,
@@ -55,6 +56,8 @@ SUGGESTIONS = 5
 RECALL_CUTOFFS = (10, 30, 50)
 LABELING_ROWS = DATA_DIR / "labeling" / "labels.jsonl"
 GOLD_POOL_ROWS = DATA_DIR / "labeling" / "gold_pool_labels.jsonl"
+# The trained runs, in ladder order: fine-tuning, then GRPO on top of it.
+LADDER_RUNS = ("qwen-lora", "qwen-lora-grpo")
 TRAINING_LABELS = DATA_DIR / "labeling" / "training_labels.jsonl"
 
 
@@ -180,6 +183,7 @@ def gold_report(
     labels_path: Path = LABELS_PATH,
     rows_path: Path = GOLD_POOL_ROWS,
     training_labels_path: Path = TRAINING_LABELS,
+    ladder_dir: Path = LADDER_DIR,
 ) -> dict | None:
     """Everything measured against hand labels, or None until some exist."""
     gold = GoldStore(labels_path, queue, taxonomy).labels()
@@ -222,6 +226,15 @@ def gold_report(
             report["pipeline_label_misses"] = miss_kinds(
                 [gold[a]["path"] for a in checked], [rows[a]["path"] for a in checked]
             )
+            rungs = saved_rungs(LADDER_RUNS, ladder_dir)
+            ladder = rungs and ladder_report(
+                {a: gold[a]["path"] for a in asins},
+                {a: rows[a]["path"] for a in checked},
+                rungs,
+                taxonomy.paths(),
+            )
+            if ladder:
+                report["ladder"] = ladder
         arbitration = arbitrator_score(list(rows.values()), {a: gold[a]["path"] for a in asins})
         if arbitration is not None:
             report["arbitration"] = arbitration

@@ -1,4 +1,5 @@
 import ast
+import json
 from pathlib import Path
 
 import pytest
@@ -142,8 +143,38 @@ def test_the_gold_report_measures_pipeline_labels_when_present(gold_world, taxon
         store.path,
         rows_path,
         tmp_path / "none",
+        tmp_path / "ladder",
     )
     assert report["pipeline_labels"]["exact_leaf_accuracy"] == 1.0
+    assert "ladder" not in report
+
+
+def test_the_gold_report_scores_saved_ladder_answers(gold_world, taxonomy):
+    products, labels, queue, store, shortlists, tmp_path = gold_world
+    asin = queue[0]
+    store.label(asin, labels[asin], {})
+    rows_path = tmp_path / "rows.jsonl"
+    write_jsonl(rows_path, [{"parent_asin": asin, "path": labels[asin]}])
+    ladder = tmp_path / "ladder"
+    ladder.mkdir()
+    (ladder / "qwen-lora.json").write_text(
+        json.dumps({"free": {asin: labels[asin]}, "constrained": {asin: None}})
+    )
+    report = gold_report(
+        products,
+        taxonomy,
+        queue,
+        labels,
+        shortlists,
+        10.0,
+        store.path,
+        rows_path,
+        tmp_path / "none",
+        ladder,
+    )
+    free, constrained = report["ladder"]["rungs"]
+    assert free["category"]["exact_leaf_accuracy"] == 1.0
+    assert constrained["minus_pipeline_labels"]["difference"] == -1.0
 
 
 def test_the_baseline_is_rerun_on_pipeline_labels_when_they_exist(gold_world, taxonomy):

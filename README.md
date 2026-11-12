@@ -378,9 +378,28 @@ it can be taught. On the 50 hand-labeled products (Wilson 95% intervals):
 **The training labels are noisy at the deepest levels.** They almost always have the right
 department and usually the right aisle, but about half name the exact leaf wrong. Of the 24
 misses, 17 are on the right path at the wrong depth (10 too deep, 7 too shallow) and 7 take a
-different branch, 3 of them from the top. A model trained on them is taught that noise too. The evaluation ladder (fine-tuning, then GRPO) is scored on the same 50 products, with
-a paired bootstrap against these labels, to say whether training improves on the labels it learned
-from. Levels below 5 have fewer than 10 products each and are left out.
+different branch, 3 of them from the top. A model trained on them is taught that noise too. Levels below 5 have fewer than 10 products each
+and are left out.
+
+### Does training beat its labels?
+
+Each trained model is asked for the category alone of the same 50 hand-labeled products, greedy,
+once free and once constrained to real taxonomy paths by the token trie (`make ladder`, then
+`make reproduce`). The difference against the pipeline labels is paired over products.
+
+| Model | Decoding | Exact category | Top level | Invalid paths | Minus pipeline labels |
+| --- | --- | --- | --- | --- | --- |
+| Pipeline labels (the training data) | | 52.0% [38.5, 65.2] | 94.0% [83.8, 97.9] | 0.0% | |
+| Fine-tuned | free | 12.0% [5.6, 23.8] | 90.0% [78.6, 95.7] | 56.0% [42.3, 68.8] | -40.0 [-58.0, -22.0] |
+| Fine-tuned | constrained | 20.0% [11.2, 33.0] | 90.0% [78.6, 95.7] | 0.0% [0.0, 7.1] | -32.0 [-50.0, -14.0] |
+
+**Fine-tuning does not beat the labels it learned from: it is 32 points worse on exact category,
+and the interval excludes zero.** It learns the department nearly as well as the labels (90%
+against 94%), but below that it mostly picks a different branch: 26 of its 40 constrained misses
+take a different branch (21 under the right department, 5 from the top), against 7 of the labels'
+24. Free decoding
+invents a path that does not exist more than half the time; constraining it to the trie removes
+those and adds 8 points. GRPO, on top of the fine-tuned model, is next on the ladder.
 
 The keyword baseline on the same products: 8.0% [3.2, 18.8] exact when trained on the silver
 labels, 12.0% [5.6, 23.8] when trained on the pipeline labels. The paired difference, +4.0 points
