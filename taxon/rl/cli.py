@@ -26,6 +26,7 @@ from taxon.training.model import TINY
 
 RL_RUNS = DATA_DIR / "rl"
 ENRICHMENTS_FILE = "enrichments_taxon.jsonl"
+BENCH_TAXON_ENRICHMENT = DATA_DIR / "bench" / "taxon_enrichment.json"
 EXIT_REFUSED = 2
 TINY_NOTE = "Tiny random weights: this shows the pipeline runs, and says nothing about quality."
 
@@ -133,7 +134,11 @@ def _enrich(args, products, queue, taxonomy, processor_factory) -> int:
         "enrichments": str(run_dir / ENRICHMENTS_FILE),
         **report,
     }
-    (run_dir / "enrichment.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    text = json.dumps(report, indent=2)
+    (run_dir / "enrichment.json").write_text(text, encoding="utf-8")
+    # The benchmark cites the latest Taxon enrichment, whichever run produced it.
+    BENCH_TAXON_ENRICHMENT.parent.mkdir(parents=True, exist_ok=True)
+    BENCH_TAXON_ENRICHMENT.write_text(text, encoding="utf-8")
     print(json.dumps(report, indent=2))
     if record["model"] == TINY:
         print(TINY_NOTE)

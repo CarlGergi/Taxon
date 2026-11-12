@@ -286,6 +286,18 @@ def main() -> None:
         write_result("labeling", agreement_report(read_jsonl(LABELING_ROWS)))
     else:
         print("Nothing has been labeled yet, so agreement rates are skipped.", flush=True)
+    benchmark_report()
+
+
+def benchmark_report() -> None:
+    """Score CatalogBench from the logged agent runs and judgments, once there are any."""
+    from taxon.bench import agent
+    from taxon.bench import cli as bench
+
+    if not agent.RunLog(agent.agent_dir(False)).path.exists():
+        print("No agent runs yet, so the benchmark is not scored.", flush=True)
+        return
+    bench.main(["score"])
 
 
 if __name__ == "__main__":

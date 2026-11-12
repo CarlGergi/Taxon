@@ -1,6 +1,6 @@
 .PHONY: setup test lint reproduce clean backup gold label-fake label-dry-run label-first \
 	label-gold-pool label-attributes tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu \
-	judge-price judge-sample judge-review judge-agreement judge-pool rl-tiny rl-gpu measure shop-price shop enrich-price enrich enrich-taxon bench-score
+	judge-price judge-sample judge-review judge-agreement judge-pool rl-tiny rl-gpu measure shop-price shop enrich-price enrich enrich-taxon bench-score quant-prepare quant
 
 TARGET ?= 200
 TASKS ?= 100
@@ -8,6 +8,7 @@ BACKUP_DIR ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/taxon-backups
 CATALOG ?= raw
 CONDITION ?= raw
 RUNS ?= 3
+QUANT_RUN ?= data/rl/qwen-lora-grpo
 RUN ?= qwen-lora
 PRODUCTS ?= 2000
 STEPS ?= 2000
@@ -111,6 +112,14 @@ enrich-taxon:
 # The benchmark report, once every catalog's runs are in and every returned product is judged.
 bench-score:
 	uv run python -m taxon.bench score $(if $(TAXON_RUN),--taxon-run $(TAXON_RUN))
+
+# The quantization study on this Mac: merge a trained run, convert it to bf16, 8-bit and 4-bit with
+# MLX, then measure each on the gold set. Free; MLX is installed only for these two targets.
+quant-prepare:
+	uv run --group quant python -m taxon.quant prepare --run $(QUANT_RUN)
+
+quant:
+	uv run --group quant python -m taxon.quant measure
 
 # Price the shopping agent's runs, spending nothing.
 shop-price:

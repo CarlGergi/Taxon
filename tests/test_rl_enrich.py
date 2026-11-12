@@ -184,6 +184,7 @@ def test_the_command_enriches_the_catalog_with_a_trained_run(world, capsys, monk
         )
         == 0
     )
+    monkeypatch.setattr(cli, "BENCH_TAXON_ENRICHMENT", root / "bench" / "taxon_enrichment.json")
     monkeypatch.setattr(
         "taxon.bench.agent.benchmark_catalog_ids",
         lambda products, queue: [p["parent_asin"] for p in products[:5]],
@@ -193,6 +194,7 @@ def test_the_command_enriches_the_catalog_with_a_trained_run(world, capsys, monk
     out = capsys.readouterr().out
     assert "Tiny random weights" in out
     report = json.loads((root / "rl" / "grpo-tiny" / "enrichment.json").read_text())
+    assert json.loads((root / "bench" / "taxon_enrichment.json").read_text()) == report
     assert report["products"] == 3
     assert report["with_category"] == 3
     assert report["hardware"]["device"] == "cpu"

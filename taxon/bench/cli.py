@@ -55,6 +55,7 @@ def drafting_runner(fake: bool):
 CONDITIONS = ("raw", "sonnet", "taxon")
 SONNET_ENRICHMENT = DATA_DIR / "labeling" / "results" / "enrichment.json"
 TAXON_RUNS = DATA_DIR / "rl"
+TAXON_ENRICHMENT = DATA_DIR / "bench" / "taxon_enrichment.json"
 
 
 def _enrichment_costs(taxon_run: str | None) -> dict:
@@ -62,8 +63,8 @@ def _enrichment_costs(taxon_run: str | None) -> dict:
     if SONNET_ENRICHMENT.exists():
         report = json.loads(SONNET_ENRICHMENT.read_text(encoding="utf-8"))
         costs["sonnet"] = score.enrichment_cost(dollars=report["cost"], products=report["products"])
-    if taxon_run:
-        path = TAXON_RUNS / taxon_run / "enrichment.json"
+    path = TAXON_RUNS / taxon_run / "enrichment.json" if taxon_run else TAXON_ENRICHMENT
+    if path.exists():
         report = json.loads(path.read_text(encoding="utf-8"))
         costs["taxon"] = score.enrichment_cost(
             hours_per_million=report["hours_per_million_products"], hardware=report["hardware"]

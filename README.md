@@ -296,6 +296,21 @@ Training runs on an Apple M5 Max through PyTorch's MPS backend, in BF16. `make m
 real fine-tuning and GRPO steps there and sizes overnight runs from them. Every result file records
 the machine and device it came from. The quantization study needs an NVIDIA GPU and runs later.
 
+## Quantization
+
+The final model at three precisions, on this Mac. The trained adapters are merged into the base
+weights and MLX converts the result to bfloat16, 8-bit and 4-bit affine weight quantization (groups
+of 64). MLX leaves some layers, such as the vision tower, at full precision, so the averages are
+about 9.6 and 6.2 bits per weight. Each version answers the gold products the same way: category
+alone, greedy, through the same token trie, one at a time after one untimed warm-up reply. The
+report gives accuracy per taxonomy level, p50 and p95 latency, throughput, size, peak memory and
+the local hours a million products would take. FP8 needs an NVIDIA GPU and is not measured.
+
+```bash
+make quant-prepare QUANT_RUN=data/rl/qwen-lora-grpo
+make quant
+```
+
 ## Results
 
 ### Label space

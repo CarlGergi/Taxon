@@ -41,46 +41,69 @@ def _closers(tokenizer) -> tuple[int, ...]:
     return tuple(i for i in range(len(tokenizer)) if tokenizer.decode([i]).startswith('"'))
 
 
+class TrieGuide:
+    """Which tokens one reply may take next, whatever framework generates it.
+
+    It forces the category opening, then keeps the value inside the trie, and lets it close only
+    where a path ends; after that the reply is free. `allowed()` is None once it is free.
+    """
+
+    def __init__(self, opening: Sequence[int], trie: TokenTrie, closers: Sequence[int]):
+        self.opening = list(opening)
+        self.trie = trie
+        self.closers = list(closers)
+        self.phase, self.position = "open", 0
+
+    def advance(self, token: int) -> None:
+        if self.phase == "open":
+            self.position += 1
+            if self.position == len(self.opening):
+                self.phase, self.position = "path", ROOT
+        elif self.phase == "path":
+            following = self.trie.step(self.position, token)
+            # Anything else allowed in this phase is a closing quote after a complete path.
+            if following is None:
+                self.phase, self.position = "free", None
+            else:
+                self.position = following
+
+    def allowed(self) -> list[int] | None:
+        if self.phase == "free":
+            return None
+        if self.phase == "open":
+            return [self.opening[self.position]]
+        tokens = self.trie.allowed(self.position)
+        if self.trie.terminal(self.position) is not None:
+            tokens = tokens + self.closers
+        return tokens
+
+
+def trie_guide(tokenizer, trie: TokenTrie) -> TrieGuide:
+    opening = tokenizer.encode(CATEGORY_OPEN, add_special_tokens=False)
+    return TrieGuide(opening, trie, _closers(tokenizer))
+
+
 class TrieLogitsProcessor(LogitsProcessor):
-    """Forces the category opening, then keeps each row's value inside the trie. Rows are tracked
-    separately, each as ("open", tokens forced so far), ("path", trie state) or ("free", None)."""
+    """A TrieGuide per row of a batch, applied to PyTorch scores."""
 
     def __init__(self, tokenizer, trie: TokenTrie, prompt_length: int):
+        self.tokenizer = tokenizer
         self.trie = trie
         self.prompt_length = prompt_length
-        self.opening = tokenizer.encode(CATEGORY_OPEN, add_special_tokens=False)
-        self.closers = torch.tensor(_closers(tokenizer))
-        self.states: list[tuple[str, int | None]] = []
-
-    def _advance(self, row: int, token: int) -> None:
-        phase, position = self.states[row]
-        if phase == "open":
-            position += 1
-            self.states[row] = (
-                ("open", position) if position < len(self.opening) else ("path", ROOT)
-            )
-        elif phase == "path":
-            following = self.trie.step(position, token)
-            # Anything else allowed in this phase is a closing quote after a complete path.
-            self.states[row] = ("path", following) if following is not None else ("free", None)
+        self.guides: list[TrieGuide] = []
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor):
-        if not self.states:
-            self.states = [("open", 0)] * input_ids.shape[0]
+        if not self.guides:
+            self.guides = [trie_guide(self.tokenizer, self.trie) for _ in range(input_ids.shape[0])]
         elif input_ids.shape[1] > self.prompt_length:
-            for row in range(input_ids.shape[0]):
-                self._advance(row, int(input_ids[row, -1]))
-        for row, (phase, position) in enumerate(self.states):
-            if phase == "free":
+            for row, guide in enumerate(self.guides):
+                guide.advance(int(input_ids[row, -1]))
+        for row, guide in enumerate(self.guides):
+            allowed = guide.allowed()
+            if allowed is None:
                 continue
-            if phase == "open":
-                allowed = torch.tensor([self.opening[position]])
-            else:
-                allowed = torch.tensor(self.trie.allowed(position), dtype=torch.long)
-                if self.trie.terminal(position) is not None:
-                    allowed = torch.cat([allowed, self.closers])
             mask = torch.full_like(scores[row], float("-inf"))
-            mask[allowed] = 0.0
+            mask[torch.tensor(allowed, dtype=torch.long)] = 0.0
             scores[row] = scores[row] + mask
         return scores
 

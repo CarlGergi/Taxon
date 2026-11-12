@@ -200,3 +200,21 @@ def test_the_command_says_what_is_missing_instead_of_scoring(tmp_path, monkeypat
     assert cli._score(args, TASKS, items, tmp_path) == 1
     assert "NOT READY" in capsys.readouterr().out
     assert written == []
+
+
+def test_reproduce_skips_the_benchmark_until_there_are_runs(tmp_path, monkeypatch, capsys):
+    from taxon import reproduce
+
+    monkeypatch.setattr(cli.agent, "agent_dir", lambda fake: tmp_path / "agent")
+    reproduce.benchmark_report()
+    assert "No agent runs yet" in capsys.readouterr().out
+
+
+def test_the_latest_taxon_enrichment_is_cited_without_naming_its_run(tmp_path, monkeypatch):
+    path = tmp_path / "taxon_enrichment.json"
+    path.write_text(json.dumps({"hours_per_million_products": 800.0, "hardware": {"chip": "M5"}}))
+    monkeypatch.setattr(cli, "TAXON_ENRICHMENT", path)
+    monkeypatch.setattr(cli, "SONNET_ENRICHMENT", tmp_path / "missing.json")
+    costs = cli._enrichment_costs(None)
+    assert costs["taxon"]["local_hours_per_million_products"] == 800.0
+    assert "sonnet" not in costs
