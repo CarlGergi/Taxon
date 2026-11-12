@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 
 import pytest
 
@@ -13,7 +14,7 @@ from taxon.labeling.attributes import (
     AttributeExtractor,
     use_mode,
 )
-from taxon.labeling.budget import Budget
+from taxon.labeling.budget import CAPS, Budget, limited_caps
 from taxon.labeling.cache import ResponseCache
 from taxon.labeling.env import Secrets
 from taxon.labeling.fakes import FakeBatchClient, demo_responder
@@ -413,6 +414,43 @@ def test_the_attribute_stage_adds_attributes_to_training_labels(tmp_path, inputs
     exported = read_jsonl(tmp_path / "training_labels.jsonl")
     assert any("attributes" in r for r in exported)
     assert not {r["parent_asin"] for r in exported} & set(gold)
+
+
+def test_a_spending_limit_stops_the_attribute_pass_instead_of_passing_it(
+    tmp_path, inputs, monkeypatch, capsys
+):
+    gold_eval(tmp_path, monkeypatch, scored=True)
+    assert run(tmp_path, "dry-run", "--n", "6", "--fake") == 0
+    assert run(tmp_path, "run", "--first", "--fake") == 0
+    # Without cached replies, every request would cost something.
+    shutil.rmtree(tmp_path / "responses")
+    before = Budget(tmp_path / "ledger.jsonl").spent("anthropic")
+    assert run(tmp_path, "run", "--attributes", "--fake", "--limit", "0") == cli.EXIT_BUDGET
+    assert "STOPPED" in capsys.readouterr().out
+    assert Budget(tmp_path / "ledger.jsonl").spent("anthropic") == pytest.approx(before)
+
+
+def test_a_generous_limit_lets_the_attribute_pass_finish(tmp_path, inputs, monkeypatch):
+    gold_eval(tmp_path, monkeypatch, scored=True)
+    assert run(tmp_path, "dry-run", "--n", "6", "--fake") == 0
+    assert run(tmp_path, "run", "--first", "--fake") == 0
+    before = Budget(tmp_path / "ledger.jsonl").spent("anthropic")
+    assert run(tmp_path, "run", "--attributes", "--fake", "--limit", "5") == 0
+    assert Budget(tmp_path / "ledger.jsonl").spent("anthropic") - before <= 5
+
+
+def test_limited_caps_add_the_limit_to_what_is_spent_and_keep_the_overall_cap(tmp_path):
+    ledger = tmp_path / "ledger.jsonl"
+    budget = Budget(ledger)
+    budget.reserve("anthropic", "b1", 3.0)
+    budget.settle("anthropic", "b1", 1.5)
+    assert limited_caps(ledger, None) == CAPS
+    caps = limited_caps(ledger, 0.51)
+    assert caps["anthropic"] == pytest.approx(2.01)
+    assert caps["openai"] == pytest.approx(0.51)
+    assert limited_caps(ledger, 100.0) == CAPS
+    with pytest.raises(ValueError):
+        limited_caps(ledger, -1)
 
 
 def shortlist_taxonomy():

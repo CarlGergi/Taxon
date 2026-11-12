@@ -206,3 +206,28 @@ def _macro_intervals(
     for row in levels:
         for name in ("macro_precision", "macro_recall"):
             row[f"{name}_ci95"] = percentile_interval(samples.get((row["level"], name), []))
+
+
+def miss_kinds(golds: Sequence[str], preds: Sequence[str | None]) -> dict[str, int]:
+    """How each answer relates to its gold path: exact, on the path at the wrong depth, or not."""
+    counts = {
+        "exact": 0,
+        "too_deep": 0,
+        "too_shallow": 0,
+        "other_branch": 0,
+        "other_top_level": 0,
+        "abstained": 0,
+    }
+    for gold, pred in zip(golds, preds, strict=True):
+        if not pred:
+            counts["abstained"] += 1
+        elif pred == gold:
+            counts["exact"] += 1
+        elif pred.startswith(f"{gold} > "):
+            counts["too_deep"] += 1
+        elif gold.startswith(f"{pred} > "):
+            counts["too_shallow"] += 1
+        else:
+            counts["other_branch"] += 1
+            counts["other_top_level"] += path_prefixes(gold)[0] != path_prefixes(pred)[0]
+    return counts

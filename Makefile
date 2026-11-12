@@ -12,6 +12,8 @@ QUANT_RUN ?= data/rl/qwen-lora-grpo
 RUN ?= qwen-lora
 PRODUCTS ?= 2000
 STEPS ?= 2000
+# Two field choices per product, so the model learns its category answer should not change with them.
+VARIANTS ?= 2
 # Sized from make measure on the M5 Max: about 16 s a step, so 1,600 steps fill an 8-hour night.
 GRPO_STEPS ?= 1600
 RUNS ?= data/bench/runs.jsonl
@@ -147,7 +149,7 @@ train-tiny:
 # The real model on this machine's GPU (Apple or NVIDIA), with labels from the labeling pipeline.
 train-gpu:
 	uv run python -m taxon.training train --gpu --labels pipeline --name $(RUN) --products $(PRODUCTS) \
-		--max-steps $(STEPS)
+		--max-steps $(STEPS) --variants $(VARIANTS)
 
 # GRPO on CPU with tiny random weights, on top of make train-tiny's adapter, then free against
 # trie-constrained decoding. This only shows the pipeline runs: its numbers are not results.

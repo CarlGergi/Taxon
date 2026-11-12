@@ -14,7 +14,7 @@ from pathlib import Path
 from tokenizers import Tokenizer
 
 from eval.fields import attribute_accuracy, paired_attribute_difference
-from eval.metrics import BOOTSTRAP, evaluate, paired_difference
+from eval.metrics import BOOTSTRAP, evaluate, miss_kinds, paired_difference
 from taxon.baseline import TfidfLogisticRegression, run_baseline
 from taxon.bench import search
 from taxon.bench.catalog import raw_catalog
@@ -218,6 +218,9 @@ def gold_report(
                 [gold[a]["path"] for a in checked],
                 [rows[a]["path"] for a in checked],
                 bootstrap=BOOTSTRAP,
+            )
+            report["pipeline_label_misses"] = miss_kinds(
+                [gold[a]["path"] for a in checked], [rows[a]["path"] for a in checked]
             )
         arbitration = arbitrator_score(list(rows.values()), {a: gold[a]["path"] for a in asins})
         if arbitration is not None:

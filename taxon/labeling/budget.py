@@ -74,3 +74,17 @@ class Budget:
     def charge(self, vendor: str, amount: float, reason: str) -> None:
         """Record a cost outside any batch, such as cache storage."""
         self._append({"event": "charge", "vendor": vendor, "amount": amount, "reason": reason})
+
+
+def limited_caps(ledger: Path, limit: float | None, caps: Mapping[str, float] = CAPS) -> dict:
+    """Caps for one run that may spend at most `limit` dollars per vendor, on top of what is spent.
+
+    The overall caps still apply, whichever is lower. The runner submits only what fits under the
+    cap at its worst case, so the run can never pass the limit; it stops instead.
+    """
+    if limit is None:
+        return dict(caps)
+    if limit < 0:
+        raise ValueError("a spending limit cannot be negative")
+    budget = Budget(ledger, caps)
+    return {vendor: min(cap, budget.spent(vendor) + limit) for vendor, cap in caps.items()}

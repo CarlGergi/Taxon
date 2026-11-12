@@ -42,14 +42,16 @@ the arbitrator already covers what a third vote would decide. The price is that 
 goes to the arbitrator, with no majority vote to fall back on. The labeler takes any number of
 annotators, and the Gemini client is kept, unused, so a third can be added back.
 
-| Measure | Result |
+| Measure | Result, with 95% interval |
 | --- | --- |
-| Products sent to the arbitrator | pending the first labeling run |
-| Arbitrator accuracy on disputed products, against the hand labels | pending the gold set |
+| Products where both annotators gave the same category (of 2,000) | 75.0% [73.1, 76.9] |
+| Products sent to the arbitrator (of 2,000) | 24.9% [23.1, 26.9] |
+| Arbitrator accuracy on disputed products, against the hand labels | 57.1% [25.0, 84.2], 4 of 7 |
 
-The first comes from the agreement report of each labeling run. The second is the `arbitration`
-entry of `results/gold_eval.json`, written by `make reproduce` once hand-labeled products include
-disagreements; it sets the arbitrator beside taking either annotator's answer alone.
+The first two come from the agreement report of the 2,000-product run (`results/labeling.json`).
+The third is the `arbitration` entry of `results/gold_eval.json`: only 7 of the 50 hand-labeled
+products were disputed, so it says little. On those 7 the arbitrator chose the same category as
+`gpt-6-luna` every time.
 
 | Role | Model |
 | --- | --- |
@@ -354,6 +356,48 @@ descendant of the label is in it.
 
 **The second row is flattering.** Its classifier learned from the same provisional labels it is scored
 against, and knows only their categories. Recall on the gold set will be the real figure.
+
+### Training labels against the hand labels
+
+The fine-tuned model learns from the labeling pipeline's categories, so their accuracy bounds what
+it can be taught. On the 50 hand-labeled products (Wilson 95% intervals):
+
+| Measure | Pipeline labels |
+| --- | --- |
+| Exact category | 52.0% [38.5, 65.2] |
+| Right at the top level | 94.0% [83.8, 97.9] |
+
+| Level | Gold support | Precision | Recall |
+| --- | --- | --- | --- |
+| 1 | 50 | 94.0% [83.8, 97.9] | 94.0% [83.8, 97.9] |
+| 2 | 49 | 92.0% [81.2, 96.8] | 93.9% [83.5, 97.9] |
+| 3 | 46 | 88.6% [76.0, 95.0] | 84.8% [71.8, 92.4] |
+| 4 | 41 | 71.4% [56.4, 82.8] | 73.2% [58.1, 84.3] |
+| 5 | 24 | 65.2% [44.9, 81.2] | 62.5% [42.7, 78.8] |
+
+**The training labels are noisy at the deepest levels.** They almost always have the right
+department and usually the right aisle, but about half name the exact leaf wrong. Of the 24
+misses, 17 are on the right path at the wrong depth (10 too deep, 7 too shallow) and 7 take a
+different branch, 3 of them from the top. A model trained on them is taught that noise too. The evaluation ladder (fine-tuning, then GRPO) is scored on the same 50 products, with
+a paired bootstrap against these labels, to say whether training improves on the labels it learned
+from. Levels below 5 have fewer than 10 products each and are left out.
+
+The keyword baseline on the same products: 8.0% [3.2, 18.8] exact when trained on the silver
+labels, 12.0% [5.6, 23.8] when trained on the pipeline labels. The paired difference, +4.0 points
+[−6.0, +16.0], is too small to call. The category shortlist given to the annotators holds the exact
+hand label for 76.0% of products in its top 50, and a close one (an ancestor or descendant) for
+96.0%.
+
+Attributes, on 66 hand-labeled values across 39 products, with intervals that resample products:
+
+| Attribute pass | Values matched |
+| --- | --- |
+| Shortlist of allowed values | 53.0% [39.7, 66.1] |
+| Exact attribute names only | 31.8% [17.7, 45.6] |
+| Only what the listing's details state | 18.2% [8.7, 28.1] |
+
+The shortlist version beats the exact one by 21.2 points [3.4, 41.5] on the same products, so it
+is the version run on the 2,000 training products.
 
 ### Baseline
 

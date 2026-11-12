@@ -128,8 +128,7 @@ def queue():
 @pytest.fixture(scope="module")
 def shortlists():
     return {
-        row["parent_asin"]: row["shortlist"]
-        for row in read_jsonl(DERIVED_DIR / "shortlists.jsonl")
+        row["parent_asin"]: row["shortlist"] for row in read_jsonl(DERIVED_DIR / "shortlists.jsonl")
     }
 
 
@@ -277,5 +276,51 @@ def test_the_readme_reports_the_current_results():
         f"| {found['sample']} | {percent(found['found_first'])} | "
         f"{percent(found['found_in_top_10'])} |"
     )
+    missing = [line for line in expected if line not in readme]
+    assert not missing, f"README is out of date: {missing}"
+
+
+def test_the_readme_reports_the_current_gold_results():
+    gold_path = RESULTS_DIR / "gold_eval.json"
+    if not gold_path.exists():
+        pytest.skip("no hand labels yet")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    gold = json.loads(gold_path.read_text(encoding="utf-8"))
+    labeling = json.loads((RESULTS_DIR / "labeling.json").read_text(encoding="utf-8"))
+
+    def percent(value):
+        return f"{value * 100:.1f}%"
+
+    def interval(bounds):
+        return f"[{bounds[0] * 100:.1f}, {bounds[1] * 100:.1f}]"
+
+    def with_ci(value, bounds):
+        return f"{percent(value)} {interval(bounds)}"
+
+    labels = gold["pipeline_labels"]
+    top = labels["levels"][0]
+    misses = gold["pipeline_label_misses"]
+    attributes = gold["attribute_pass"]
+    paired = attributes["shortlist_minus_exact"]
+    shortlist = attributes["versions"]["shortlist"]
+    expected = [
+        f"| Exact category | "
+        f"{with_ci(labels['exact_leaf_accuracy'], labels['exact_leaf_accuracy_ci95'])} |",
+        f"| Right at the top level | {with_ci(top['micro_recall'], top['micro_recall_ci95'])} |",
+        f"{misses['too_deep'] + misses['too_shallow']} are on the right path at the wrong depth "
+        f"({misses['too_deep']} too deep, {misses['too_shallow']} too shallow)",
+        f"| Products sent to the arbitrator (of 2,000) | "
+        f"{with_ci(labeling['sent_to_arbitrator'], labeling['sent_to_arbitrator_ci95'])} |",
+        f"| Shortlist of allowed values | "
+        f"{with_ci(shortlist['accuracy'], shortlist['accuracy_ci95'])} |",
+        f"{paired['difference'] * 100:.1f} points {interval(paired['ci95'])}",
+    ]
+    expected += [
+        f"| {row['level']} | {row['gold_support']} | "
+        f"{with_ci(row['micro_precision'], row['micro_precision_ci95'])} | "
+        f"{with_ci(row['micro_recall'], row['micro_recall_ci95'])} |"
+        for row in labels["levels"]
+        if row["gold_support"] >= 10
+    ]
     missing = [line for line in expected if line not in readme]
     assert not missing, f"README is out of date: {missing}"

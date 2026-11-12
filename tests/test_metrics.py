@@ -206,3 +206,18 @@ def test_the_paired_difference_keeps_each_items_answers_together():
     assert paired_difference(golds, better, better)["ci95"] == [0.0, 0.0]
     with pytest.raises(ValueError):
         paired_difference(golds, better, worse[:3])
+
+
+def test_misses_are_sorted_by_how_they_relate_to_the_gold_path():
+    from eval.metrics import miss_kinds
+
+    golds = ["A > B", "A > B", "A > B > C", "A > B", "A > B", "A > B"]
+    preds = ["A > B", "A > B > C", "A", "A > D", "E > F", None]
+    assert miss_kinds(golds, preds) == {
+        "exact": 1,
+        "too_deep": 1,
+        "too_shallow": 1,
+        "other_branch": 2,
+        "other_top_level": 1,
+        "abstained": 1,
+    }

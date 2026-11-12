@@ -19,7 +19,7 @@ from taxon.labeling.attributes import (
     AttributeExtractor,
     use_mode,
 )
-from taxon.labeling.budget import CAPS, Budget, BudgetExceeded
+from taxon.labeling.budget import CAPS, Budget, BudgetExceeded, limited_caps
 from taxon.labeling.cache import ResponseCache
 from taxon.labeling.enrich import (
     ENRICHER,
@@ -95,16 +95,20 @@ def _load_inputs() -> tuple[Taxonomy, list[dict], list[str], dict[str, list[str]
     products = read_jsonl(DERIVED_DIR / "products.jsonl")
     gold = [row["parent_asin"] for row in read_jsonl(DERIVED_DIR / "gold_queue.jsonl")]
     shortlists = {
-        row["parent_asin"]: row["shortlist"]
-        for row in read_jsonl(DERIVED_DIR / "shortlists.jsonl")
+        row["parent_asin"]: row["shortlist"] for row in read_jsonl(DERIVED_DIR / "shortlists.jsonl")
     }
     return taxonomy, products, gold, shortlists
 
 
 def _build_labeler(
-    taxonomy: Taxonomy, space: Workspace, fake: bool, secrets: Secrets, direct: Sequence[str] = ()
+    taxonomy: Taxonomy,
+    space: Workspace,
+    fake: bool,
+    secrets: Secrets,
+    direct: Sequence[str] = (),
+    limit: float | None = None,
 ):
-    budget = Budget(space.ledger, CAPS)
+    budget = Budget(space.ledger, limited_caps(space.ledger, limit))
     if fake:
         clients = {v: FakeBatchClient(v) for v in CAPS}
         tracer = None
@@ -229,7 +233,11 @@ def _require_attribute_score(space: Workspace) -> dict:
 
 
 def run_attributes(
-    fake: bool, space: Workspace, secrets: Secrets, direct: Sequence[str] = ()
+    fake: bool,
+    space: Workspace,
+    secrets: Secrets,
+    direct: Sequence[str] = (),
+    limit: float | None = None,
 ) -> dict:
     """Add attributes to the labeled training products. Their category calls are not repeated."""
     _require_attribute_estimate(space)
@@ -240,7 +248,7 @@ def run_attributes(
     rows = read_jsonl(space.labels)
     by_asin = {p["parent_asin"]: p for p in products}
     sample = [by_asin[row["parent_asin"]] for row in rows]
-    _, extractor, runner, tracer = _build_labeler(taxonomy, space, fake, secrets, direct)
+    _, extractor, runner, tracer = _build_labeler(taxonomy, space, fake, secrets, direct, limit)
     if not fake:
         print(ImageStore(space.images).ensure_all(sample))
     # Only the version that scored better against hand labels runs on training products.
@@ -443,6 +451,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--fake", action="store_true")
     run.add_argument(
+        "--limit",
+        type=float,
+        default=None,
+        help="the most this run may spend per vendor, in dollars (attribute pass only)",
+    )
+    run.add_argument(
         "--direct",
         action="append",
         default=[],
@@ -489,7 +503,7 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
             report = run_enrichment(args.fake, space, secrets)
             print(json.dumps(report, indent=2))
         elif args.attributes:
-            report = run_attributes(args.fake, space, secrets, args.direct)
+            report = run_attributes(args.fake, space, secrets, args.direct, args.limit)
             print(json.dumps(report["attributes"], indent=2))
             print(f"Spent by vendor: {report['spent']}")
         elif args.gold_pool:
