@@ -40,6 +40,8 @@ header {
 }
 .bar { flex: 1; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
 #bar-fill { height: 100%; width: 0; background: var(--accent); }
+/* Elements with a display rule would otherwise ignore the hidden attribute. */
+[hidden] { display: none !important; }
 main {
   display: grid;
   grid-template-columns: minmax(280px, 5fr) minmax(320px, 7fr);

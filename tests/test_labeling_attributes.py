@@ -284,6 +284,9 @@ def test_hand_labels_score_the_pass_beside_the_details_alone(taxonomy):
     assert score["versions"][SHORTLIST]["accuracy"] == pytest.approx(2 / 3)
     assert score["better"] == SHORTLIST
     assert score["details_only"]["values"] == 3
+    paired = score["shortlist_minus_exact"]
+    assert paired["difference"] == pytest.approx(1 / 3)
+    assert paired["ci95"][0] <= paired["difference"] <= paired["ci95"][1]
 
 
 def test_a_tie_keeps_the_exact_version(taxonomy):

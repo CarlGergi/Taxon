@@ -216,7 +216,19 @@ def test_enrichment_waits_for_the_labeling_run(tmp_path, inputs, monkeypatch):
         run(tmp_path, "enrich", "--fake")
 
 
+def unscored(monkeypatch, tmp_path):
+    """Point the gold scoring at a file that does not exist, whatever the real results hold."""
+    original = cli.Workspace.__init__
+
+    def init(self, root):
+        original(self, root)
+        self.gold_eval = tmp_path / "missing_gold_eval.json"
+
+    monkeypatch.setattr(cli.Workspace, "__init__", init)
+
+
 def test_enrichment_waits_for_the_gold_scoring(tmp_path, inputs, monkeypatch):
+    unscored(monkeypatch, tmp_path)
     labeled(tmp_path)
     with pytest.raises(SystemExit, match="against hand labels"):
         run(tmp_path, "enrich", "--fake")

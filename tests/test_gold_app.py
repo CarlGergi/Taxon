@@ -321,3 +321,13 @@ def test_unknown_routes_are_not_found(base):
 
 def test_the_server_only_binds_to_the_local_machine():
     assert taxon.gold.server.HOST == "127.0.0.1"
+
+
+def test_the_page_hides_the_form_once_the_target_is_reached():
+    # main has its own display rule, which would otherwise override the hidden attribute and
+    # leave the form on screen with no product behind it.
+    static = Path(__file__).resolve().parents[1] / "taxon" / "gold" / "static"
+    assert "[hidden] { display: none !important; }" in (static / "style.css").read_text()
+    script = (static / "app.js").read_text()
+    for name in ("save", "skip"):
+        assert f"async function {name}() {{\n  if (!state || !state.item) return;" in script

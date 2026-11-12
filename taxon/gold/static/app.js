@@ -193,6 +193,7 @@ function readAttributes() {
 }
 
 async function save() {
+  if (!state || !state.item) return;
   try {
     state = await api("/api/label", { asin: state.item.parent_asin, path: node.path, attributes: readAttributes() });
     render();
@@ -202,6 +203,7 @@ async function save() {
 }
 
 async function skip() {
+  if (!state || !state.item) return;
   try {
     state = await api("/api/skip", { asin: state.item.parent_asin });
     render();

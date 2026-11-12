@@ -123,3 +123,32 @@ def attribute_accuracy(
             for handle, (right, n) in sorted(totals.items())
         },
     }
+
+
+def paired_attribute_difference(
+    golds: Sequence[Mapping[str, str]],
+    a: Sequence[Mapping | None],
+    b: Sequence[Mapping | None],
+    resamples: int = BOOTSTRAP,
+    seed: int = 0,
+) -> dict:
+    """Attribute accuracy of a minus b on the same hand-labeled values, resampling products."""
+    rows = [
+        (
+            sum((x or {}).get(h) == v for h, v in gold.items())
+            - sum((y or {}).get(h) == v for h, v in gold.items()),
+            len(gold),
+        )
+        for gold, x, y in zip(golds, a, b, strict=True)
+    ]
+
+    def difference(indices: list[int]) -> float | None:
+        n = sum(rows[i][1] for i in indices)
+        return sum(rows[i][0] for i in indices) / n if n else None
+
+    total = sum(n for _, n in rows)
+    return {
+        "values": total,
+        "difference": difference(list(range(len(rows)))),
+        "ci95": bootstrap_interval(difference, len(rows), resamples, seed) if total else None,
+    }

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from tokenizers import Tokenizer
 
-from eval.fields import attribute_accuracy
+from eval.fields import attribute_accuracy, paired_attribute_difference
 from eval.metrics import BOOTSTRAP, evaluate, paired_difference
 from taxon.baseline import TfidfLogisticRegression, run_baseline
 from taxon.bench import search
@@ -29,7 +29,7 @@ from taxon.gold.pool import (
 from taxon.gold.server import LABELS_PATH
 from taxon.gold.store import GoldStore
 from taxon.hardware import hardware
-from taxon.labeling.attributes import EXACT, MODES
+from taxon.labeling.attributes import EXACT, MODES, SHORTLIST
 from taxon.labeling.report import agreement_report, arbitrator_score
 from taxon.labeling.retrieval import CandidateRetriever, build_shortlists, recall_at
 from taxon.pins import (
@@ -161,6 +161,11 @@ def attribute_pass_score(
         "same_category_as_hand_label": sum(rows[a]["path"] == gold[a]["path"] for a in asins),
         "versions": versions,
         "better": better,
+        "shortlist_minus_exact": paired_attribute_difference(
+            golds,
+            [rows[a]["attribute_runs"][SHORTLIST]["attributes"] for a in asins],
+            [rows[a]["attribute_runs"][EXACT]["attributes"] for a in asins],
+        ),
         "details_only": attribute_accuracy(golds, stated),
     }
 

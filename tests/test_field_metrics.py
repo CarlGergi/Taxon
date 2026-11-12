@@ -130,3 +130,14 @@ def test_attribute_accuracy_resamples_products_not_values():
 
 def test_attribute_accuracy_with_no_labels_is_undefined():
     assert attribute_accuracy([{}], [{"color": "Red"}])["accuracy"] is None
+
+
+def test_the_paired_attribute_difference_resamples_products():
+    from eval.fields import paired_attribute_difference
+
+    golds = [{"color": "Red", "size": "M"}, {"color": "Blue"}]
+    report = paired_attribute_difference(golds, [golds[0], golds[1]], [{}, golds[1]], seed=1)
+    assert report["values"] == 3
+    assert report["difference"] == pytest.approx(2 / 3)
+    low, high = report["ci95"]
+    assert 0.0 <= low <= 2 / 3 <= high <= 1.0
