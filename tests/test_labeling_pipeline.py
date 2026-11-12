@@ -422,6 +422,9 @@ def test_agreement_groups_sum_as_expected():
     assert report["no_answers"] == 0.25
     assert report["labeled"] == 0.5
     assert report["sources"]["abstained"] == 1
+    low, high = report["sent_to_arbitrator_ci95"]
+    assert low <= report["sent_to_arbitrator"] <= high
+    assert set(report["agreement_ci95"]) == set(report["agreement"])
 
 
 def test_two_answers_that_match_with_one_abstention_are_a_majority_not_unanimous():
@@ -537,6 +540,9 @@ def test_the_arbitrator_is_scored_against_gold_and_a_majority_vote():
     alone = score["each_annotator_alone"]
     assert alone["anthropic"]["exact_leaf_accuracy"] == pytest.approx(1 / 3)
     assert alone["google"]["exact_leaf_accuracy"] == pytest.approx(2 / 3)
+    against = score["arbitrator_minus_annotator"]["google"]
+    assert against["difference"] == pytest.approx(-1 / 3)
+    assert against["ci95"][0] <= against["difference"] <= against["ci95"][1]
 
 
 def test_with_two_annotators_the_arbitrator_is_compared_with_each_one_alone():

@@ -18,7 +18,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from statistics import mean, median, quantiles
 
-from eval.metrics import evaluate
+from eval.metrics import BOOTSTRAP, bootstrap_interval, evaluate, paired_difference
 from taxon.hardware import hardware
 from taxon.pins import DATA_DIR, DERIVED_DIR, TAXONOMY
 from taxon.rl.decoding import TrieGuide, category_trie, category_value, trie_guide
@@ -93,15 +93,36 @@ class MlxTrie:
         return logits + mask
 
 
-def latency_summary(latencies: Sequence[float]) -> dict:
-    cut = quantiles(latencies, n=20) if len(latencies) > 1 else list(latencies) * 19
+def _p95(values: Sequence[float]) -> float:
+    return quantiles(values, n=20)[18] if len(values) > 1 else values[0]
+
+
+def latency_summary(latencies: Sequence[float], seed: int = 0) -> dict:
+    """Percentiles, throughput and hours per million products, each with a bootstrap interval.
+
+    Throughput and hours come from the mean latency, so their intervals are the mean's, inverted.
+    """
     seconds = mean(latencies)
+
+    def over(statistic):
+        return bootstrap_interval(
+            lambda idx: statistic([latencies[i] for i in idx]), len(latencies), BOOTSTRAP, seed
+        )
+
+    mean_low, mean_high = over(mean)
     return {
         "replies": len(latencies),
         "latency_p50_s": median(latencies),
-        "latency_p95_s": cut[18],
+        "latency_p50_s_ci95": over(median),
+        "latency_p95_s": _p95(latencies),
+        "latency_p95_s_ci95": over(_p95),
         "products_per_hour": 3_600 / seconds,
+        "products_per_hour_ci95": [3_600 / mean_high, 3_600 / mean_low],
         "hours_per_million_products": seconds * 1_000_000 / 3_600,
+        "hours_per_million_products_ci95": [
+            mean_low * 1_000_000 / 3_600,
+            mean_high * 1_000_000 / 3_600,
+        ],
     }
 
 
@@ -130,8 +151,21 @@ def measure_rows(
         latencies.append(clock() - start)
         predictions.append(category_value(text))
     return {
-        "accuracy": evaluate(list(golds), predictions, valid_paths=valid_paths),
+        "accuracy": evaluate(
+            list(golds), predictions, valid_paths=valid_paths, bootstrap=BOOTSTRAP
+        ),
         **latency_summary(latencies),
+        "predictions": predictions,
+    }
+
+
+def against_full_precision(golds: Sequence[str], precisions: Mapping[str, Mapping]) -> dict:
+    """Each quantized version's exact accuracy minus full precision's, paired over products."""
+    full = precisions["bf16"]["predictions"]
+    return {
+        name: paired_difference(golds, report["predictions"], full)
+        for name, report in precisions.items()
+        if name != "bf16"
     }
 
 
@@ -215,14 +249,16 @@ def main(argv: list[str] | None = None) -> int:
     if not rows:
         print("No hand labels yet, so there is nothing to measure against.")
         return 1
+    precisions = {
+        name: measure_precision(QUANT_DIR / name, rows, golds, taxonomy) for name in PRECISIONS
+    }
     report = {
         "hardware": hardware("mps"),
         "decoding": "greedy, category alone, trie-constrained",
         "group_size": GROUP_SIZE,
         "fp8": "not measured: it needs an NVIDIA GPU",
-        "precisions": {
-            name: measure_precision(QUANT_DIR / name, rows, golds, taxonomy) for name in PRECISIONS
-        },
+        "precisions": precisions,
+        "accuracy_minus_bf16": against_full_precision(golds, precisions),
     }
     write_result("quantization", report)
     print(json.dumps(report, indent=2))

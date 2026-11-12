@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from itertools import combinations
 from statistics import mean, stdev
 
-from eval.metrics import evaluate
+from eval.metrics import BOOTSTRAP, evaluate, paired_difference, wilson
 from taxon.labeling.budget import CAPS
 from taxon.taxonomy import path_prefixes
 
@@ -73,15 +73,21 @@ def agreement_report(rows: list[dict]) -> dict:
     n = len(rows)
     sources = Counter(row["source"] for row in rows)
     arbitrated = Counter(row["arbitrator_status"] for row in rows if "arbitrator_status" in row)
+    labeled = sum(bool(row["path"]) for row in rows)
+    kinds = ("unanimous", "majority", "no_two_agree")
     return {
         "n": n,
-        "agreement": {k: groups[k] / n for k in ("unanimous", "majority", "no_two_agree")},
+        "agreement": {k: groups[k] / n for k in kinds},
+        "agreement_ci95": {k: wilson(groups[k], n) for k in kinds},
         "no_answers": groups["no_answers"] / n,
         "sources": dict(sorted(sources.items())),
-        "labeled": sum(bool(row["path"]) for row in rows) / n,
+        "labeled": labeled / n,
+        "labeled_ci95": wilson(labeled, n),
         "arbitrator": {"ran": sum(arbitrated.values()), **dict(sorted(arbitrated.items()))},
         "sent_to_arbitrator": sum(arbitrated.values()) / n,
+        "sent_to_arbitrator_ci95": wilson(sum(arbitrated.values()), n),
         "pairwise_exact": {p: pair_exact[p] / pair_seen[p] for p in sorted(pair_seen)},
+        "pairwise_exact_ci95": {p: wilson(pair_exact[p], pair_seen[p]) for p in sorted(pair_seen)},
         "pairwise_by_level": {
             str(level): level_agree[level] / level_seen[level] for level in sorted(level_seen)
         },
@@ -122,14 +128,23 @@ def arbitrator_score(rows: list[dict], gold: Mapping[str, str]) -> dict | None:
     vendors = sorted(disputed[0]["annotators"])
     score = {
         "disagreements_with_hand_labels": len(disputed),
-        "arbitrator": evaluate(golds, [r["path"] for r in disputed]),
+        "arbitrator": evaluate(golds, [r["path"] for r in disputed], bootstrap=BOOTSTRAP),
         "each_annotator_alone": {
-            v: evaluate(golds, [r["annotators"][v]["path"] for r in disputed]) for v in vendors
+            v: evaluate(golds, [r["annotators"][v]["path"] for r in disputed], bootstrap=BOOTSTRAP)
+            for v in vendors
+        },
+        "arbitrator_minus_annotator": {
+            v: paired_difference(
+                golds, [r["path"] for r in disputed], [r["annotators"][v]["path"] for r in disputed]
+            )
+            for v in vendors
         },
     }
     # Two annotators in a dispute never share an answer, so a vote needs at least three.
     if len(vendors) >= 3:
-        score["majority_vote"] = evaluate(golds, [majority(r) for r in disputed])
+        score["majority_vote"] = evaluate(
+            golds, [majority(r) for r in disputed], bootstrap=BOOTSTRAP
+        )
     return score
 
 

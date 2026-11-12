@@ -12,6 +12,8 @@ import json
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 
+from eval.metrics import BOOTSTRAP, bootstrap_interval, wilson
+
 _MISSING = object()
 
 
@@ -38,13 +40,18 @@ def field_compliance(rows: Sequence[Mapping]) -> dict:
         missing += has_missing
         compliant += not has_extra and not has_missing
     n = len(rows)
-    return {
-        "requests": n,
-        "compliance_rate": compliant / n if n else None,
-        "parse_rate": parsed / n if n else None,
-        "extra_field_rate": extra / n if n else None,
-        "missing_field_rate": missing / n if n else None,
-    }
+    # Wilson intervals treat requests as independent. A product is asked under a few schemas, so
+    # the true intervals are a little wider than these.
+    report = {"requests": n}
+    for name, count in (
+        ("compliance_rate", compliant),
+        ("parse_rate", parsed),
+        ("extra_field_rate", extra),
+        ("missing_field_rate", missing),
+    ):
+        report[name] = count / n if n else None
+        report[f"{name}_ci95"] = wilson(count, n)
+    return report
 
 
 def field_invariance(rows: Sequence[Mapping]) -> dict:
@@ -67,15 +74,23 @@ def field_invariance(rows: Sequence[Mapping]) -> dict:
     return {
         "groups": len(every),
         "invariance_rate": sum(every) / len(every) if every else None,
+        "invariance_rate_ci95": wilson(sum(every), len(every)),
         "per_field": {
-            name: {"groups": len(outcomes), "invariance_rate": sum(outcomes) / len(outcomes)}
+            name: {
+                "groups": len(outcomes),
+                "invariance_rate": sum(outcomes) / len(outcomes),
+                "invariance_rate_ci95": wilson(sum(outcomes), len(outcomes)),
+            }
             for name, outcomes in sorted(groups.items())
         },
     }
 
 
 def attribute_accuracy(
-    golds: Sequence[Mapping[str, str]], predictions: Sequence[Mapping | None]
+    golds: Sequence[Mapping[str, str]],
+    predictions: Sequence[Mapping | None],
+    resamples: int = BOOTSTRAP,
+    seed: int = 0,
 ) -> dict:
     """Share of hand-labeled attribute values a model returned exactly, by attribute handle."""
     totals: dict[str, list[int]] = defaultdict(lambda: [0, 0])
@@ -86,11 +101,25 @@ def attribute_accuracy(
             totals[handle][1] += 1
     correct = sum(right for right, _ in totals.values())
     total = sum(n for _, n in totals.values())
+    # One product's values share its listing, so the overall interval resamples products, not
+    # values. Each attribute has at most one value per product, so its values are independent.
+    per_product = [
+        (sum((p or {}).get(h) == v for h, v in g.items()), len(g))
+        for g, p in zip(golds, predictions, strict=True)
+    ]
+
+    def overall(indices: list[int]) -> float | None:
+        n = sum(per_product[i][1] for i in indices)
+        return sum(per_product[i][0] for i in indices) / n if n else None
+
     return {
         "values": total,
         "accuracy": correct / total if total else None,
+        "accuracy_ci95": bootstrap_interval(overall, len(per_product), resamples, seed)
+        if total
+        else None,
         "per_attribute": {
-            handle: {"values": n, "accuracy": right / n}
+            handle: {"values": n, "accuracy": right / n, "accuracy_ci95": wilson(right, n)}
             for handle, (right, n) in sorted(totals.items())
         },
     }

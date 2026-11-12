@@ -2,7 +2,7 @@
 	label-gold-pool label-attributes tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu \
 	judge-price judge-sample judge-review judge-agreement judge-pool rl-tiny rl-gpu measure shop-price shop enrich-price enrich enrich-taxon bench-score quant-prepare quant
 
-TARGET ?= 200
+TARGET ?= 50
 TASKS ?= 100
 BACKUP_DIR ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/taxon-backups
 CATALOG ?= raw

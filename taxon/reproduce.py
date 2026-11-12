@@ -14,7 +14,7 @@ from pathlib import Path
 from tokenizers import Tokenizer
 
 from eval.fields import attribute_accuracy
-from eval.metrics import evaluate
+from eval.metrics import BOOTSTRAP, evaluate, paired_difference
 from taxon.baseline import TfidfLogisticRegression, run_baseline
 from taxon.bench import search
 from taxon.bench.catalog import raw_catalog
@@ -139,6 +139,7 @@ def attribute_pass_score(
 ) -> dict | None:
     """The attribute pass against hand-labeled attribute values, beside the free alternative of
     taking only what a listing's details state. None until some hand label has attributes."""
+
     def ran(asin: str, mode: str) -> bool:
         return "attributes" in rows.get(asin, {}).get("attribute_runs", {}).get(mode, {})
 
@@ -146,9 +147,7 @@ def attribute_pass_score(
     if not asins:
         return None
     golds = [gold[a]["attributes"] for a in asins]
-    stated = [
-        stated_attributes(products[a]["details"], gold[a]["path"], taxonomy) for a in asins
-    ]
+    stated = [stated_attributes(products[a]["details"], gold[a]["path"], taxonomy) for a in asins]
     versions = {
         mode: attribute_accuracy(
             golds, [rows[a]["attribute_runs"][mode]["attributes"] for a in asins]
@@ -189,7 +188,9 @@ def gold_report(
     predictions = model.predict([by_asin[a] for a in asins])
     report = {
         "labeled": len(asins),
-        "baseline_trained_on_silver": evaluate(golds, predictions, valid_paths=taxonomy.paths()),
+        "baseline_trained_on_silver": evaluate(
+            golds, predictions, valid_paths=taxonomy.paths(), bootstrap=BOOTSTRAP
+        ),
         "shortlist_recall": recall_at([shortlists[a] for a in asins], golds, RECALL_CUTOFFS),
     }
     if training_labels_path.exists():
@@ -197,15 +198,21 @@ def gold_report(
         assert_disjoint(pipeline, queue)
         rows = [by_asin[a] for a in pipeline]
         better = TfidfLogisticRegression(c=c).fit(rows, [pipeline[p["parent_asin"]] for p in rows])
+        better_predictions = better.predict([by_asin[a] for a in asins])
         report["baseline_trained_on_pipeline_labels"] = evaluate(
-            golds, better.predict([by_asin[a] for a in asins]), valid_paths=taxonomy.paths()
+            golds, better_predictions, valid_paths=taxonomy.paths(), bootstrap=BOOTSTRAP
+        )
+        report["pipeline_labels_minus_silver_for_the_baseline"] = paired_difference(
+            golds, better_predictions, predictions
         )
     if rows_path.exists():
         rows = {row["parent_asin"]: row for row in read_jsonl(rows_path)}
         checked = [a for a in asins if a in rows and rows[a]["path"]]
         if checked:
             report["pipeline_labels"] = evaluate(
-                [gold[a]["path"] for a in checked], [rows[a]["path"] for a in checked]
+                [gold[a]["path"] for a in checked],
+                [rows[a]["path"] for a in checked],
+                bootstrap=BOOTSTRAP,
             )
         arbitration = arbitrator_score(list(rows.values()), {a: gold[a]["path"] for a in asins})
         if arbitration is not None:

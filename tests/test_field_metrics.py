@@ -31,13 +31,15 @@ def test_compliance_means_exactly_the_requested_fields():
             row("D", ["category"], "not json"),
         ]
     )
-    assert report == {
+    assert {k: v for k, v in report.items() if not k.endswith("_ci95")} == {
         "requests": 4,
         "compliance_rate": 0.25,
         "parse_rate": 0.75,
         "extra_field_rate": 0.25,
         "missing_field_rate": 0.25,
     }
+    low, high = report["compliance_rate_ci95"]
+    assert low < 0.25 < high
 
 
 def test_a_null_answer_still_complies():
@@ -70,7 +72,12 @@ def test_invariance_compares_a_field_across_schemas():
 
 def test_a_field_asked_once_says_nothing_about_invariance():
     report = field_invariance([row("A", ["category"], '{"category": "X"}')])
-    assert report == {"groups": 0, "invariance_rate": None, "per_field": {}}
+    assert report == {
+        "groups": 0,
+        "invariance_rate": None,
+        "invariance_rate_ci95": None,
+        "per_field": {},
+    }
 
 
 def test_products_are_compared_only_with_themselves():
@@ -106,7 +113,19 @@ def test_attribute_accuracy_counts_each_labeled_value():
     )
     assert report["values"] == 3
     assert report["accuracy"] == pytest.approx(1 / 3)
-    assert report["per_attribute"]["color"] == {"values": 2, "accuracy": 0.5}
+    color = report["per_attribute"]["color"]
+    assert (color["values"], color["accuracy"]) == (2, 0.5)
+    assert color["accuracy_ci95"][0] < 0.5 < color["accuracy_ci95"][1]
+    low, high = report["accuracy_ci95"]
+    assert 0.0 <= low <= 1 / 3 <= high <= 1.0
+
+
+def test_attribute_accuracy_resamples_products_not_values():
+    # Two products: one with every value right, one with every value wrong. Resampling values
+    # would give a narrow interval around 0.5; resampling products can draw both the same.
+    golds = [{"a": "1", "b": "2", "c": "3"}, {"a": "1", "b": "2", "c": "3"}]
+    report = attribute_accuracy(golds, [golds[0], {}], seed=3)
+    assert report["accuracy_ci95"] == [0.0, 1.0]
 
 
 def test_attribute_accuracy_with_no_labels_is_undefined():

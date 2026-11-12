@@ -14,7 +14,7 @@ import torch
 from peft import PeftModel
 
 from eval.fields import attribute_accuracy, field_compliance, field_invariance, parse_fields
-from eval.metrics import evaluate
+from eval.metrics import BOOTSTRAP, evaluate
 from taxon.gold.pool import assert_disjoint
 from taxon.hardware import hardware
 from taxon.products import seeded_hash
@@ -69,10 +69,16 @@ def gold_scores(
     predictions = [fields.get(CATEGORY) for fields in parsed]
     return {
         "hand_labeled": len(asins),
+        # Kept per product, so two runs can be compared on the same products (paired_difference).
+        "category_predictions": {
+            asin: p if isinstance(p, str) else None
+            for asin, p in zip(asins, predictions, strict=True)
+        },
         "category": evaluate(
             [hand_labels[asin]["path"] for asin in asins],
             [p if isinstance(p, str) else None for p in predictions],
             valid_paths=valid_paths,
+            bootstrap=BOOTSTRAP,
         ),
         "attributes": attribute_accuracy(
             [hand_labels[asin]["attributes"] for asin in asins], parsed

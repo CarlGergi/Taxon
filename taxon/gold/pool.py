@@ -8,7 +8,7 @@ from collections.abc import Collection, Iterable, Sequence
 from taxon.products import seeded_hash
 
 GOLD_POOL_SIZE = 500
-FIRST_TARGET = 200
+FIRST_TARGET = 50
 
 
 class GoldOverlap(ValueError):

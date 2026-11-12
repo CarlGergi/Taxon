@@ -12,6 +12,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 
+from eval.metrics import wilson
 from taxon.baseline import TfidfLogisticRegression
 from taxon.products import seeded_hash
 from taxon.silver import singular_words
@@ -117,9 +118,7 @@ def classifier_rankings(
     else is ranked by a model fitted on all of them. Held-out products never train any model.
     """
     trainable = [
-        p
-        for p in products
-        if labels.get(p["parent_asin"]) and p["parent_asin"] not in held_out
+        p for p in products if labels.get(p["parent_asin"]) and p["parent_asin"] not in held_out
     ]
     if not trainable:
         return {p["parent_asin"]: [] for p in products}
@@ -170,8 +169,10 @@ def build_shortlists(
 
 def _is_compatible(candidate: str, gold: str) -> bool:
     """True when one path is an ancestor of, or the same as, the other."""
-    return candidate == gold or gold.startswith(f"{candidate} > ") or candidate.startswith(
-        f"{gold} > "
+    return (
+        candidate == gold
+        or gold.startswith(f"{candidate} > ")
+        or candidate.startswith(f"{gold} > ")
     )
 
 
@@ -187,5 +188,7 @@ def recall_at(
         exact = sum(gold in row[:k] for row, gold in rows)
         compatible = sum(any(_is_compatible(c, gold) for c in row[:k]) for row, gold in rows)
         report[f"exact_at_{k}"] = exact / len(rows)
+        report[f"exact_at_{k}_ci95"] = wilson(exact, len(rows))
         report[f"compatible_at_{k}"] = compatible / len(rows)
+        report[f"compatible_at_{k}_ci95"] = wilson(compatible, len(rows))
     return report

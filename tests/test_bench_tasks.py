@@ -374,3 +374,16 @@ def test_drafting_again_keeps_hand_written_requests(workspace):
 def test_too_few_labels_says_so_rather_than_inventing_tasks(workspace, capsys):
     cli.main(["draft", "--n", "500"], **workspace)
     assert "Label more products" in capsys.readouterr().out
+
+
+def test_each_draft_records_the_product_it_started_from(tmp_path):
+    from taxon.bench.tasks import GoldItem, draft_tasks, load_tasks, save_tasks
+
+    items = [
+        GoldItem("A1", "Home > Kitchen > Knives", {"color": "black", "material": "steel"}, 20.0),
+        GoldItem("A2", "Home > Kitchen > Pans", {"color": "red", "material": "iron"}, 40.0),
+    ]
+    tasks = draft_tasks(items, n=4, seed=1)
+    assert tasks and all(t.source in {"A1", "A2"} and t.source in t.acceptable for t in tasks)
+    save_tasks(tmp_path / "tasks.jsonl", tasks)
+    assert [t.source for t in load_tasks(tmp_path / "tasks.jsonl")] == [t.source for t in tasks]

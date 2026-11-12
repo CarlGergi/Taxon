@@ -37,7 +37,10 @@ def test_the_queue_ignores_input_order():
 
 
 def test_growing_the_set_keeps_earlier_items():
-    assert gold_queue(products(), seed=1, size=FIRST_TARGET) == gold_queue(products(), seed=1)[:200]
+    assert (
+        gold_queue(products(), seed=1, size=FIRST_TARGET)
+        == gold_queue(products(), seed=1)[:FIRST_TARGET]
+    )
 
 
 def test_the_first_target_is_balanced_across_domains():

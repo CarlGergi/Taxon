@@ -105,7 +105,7 @@ the baseline's top 5 suggestions. It cannot see annotator or arbitrator output. 
 `data/gold/`, which `make clean` leaves alone.
 
 The pool of 500 products is set aside before any training and never overlaps it. The first
-200 are balanced across all 28 domains.
+50, the verified set, cover all 28 domains, one or two products each.
 
 ## Benchmark tasks
 
@@ -232,9 +232,18 @@ with more runs than another. The first round is 100 tasks; all 300 run only if b
 `make bench-score` turns the logged runs into the benchmark report: for each catalog, task success
 (the first product returned meets every requirement), precision of everything returned, empty
 answers, searches, model calls, tokens and dollars per task, each as a mean with its spread across
-runs, and the paired difference in success against the raw catalog with a 95% bootstrap interval
-over tasks. It also gives each catalog's enrichment cost per million products. It refuses while
-any catalog is missing runs or any returned product is unjudged or unresolved.
+runs and a 95% interval over tasks, and the paired difference in success against the raw catalog
+with a 95% interval. The 100 tasks come from 50 hand-labeled products, about two per product, and
+two tasks from one product are not independent, so every interval resamples source products
+rather than tasks (a cluster bootstrap). It also gives each catalog's enrichment cost per million
+products. It refuses while any catalog is missing runs or any returned product is unjudged or
+unresolved.
+
+Every number measured on the gold set comes with a 95% interval: a Wilson interval for a share of
+products, a bootstrap one for macro averages and latencies, and a paired bootstrap for the
+difference between two systems on the same products. With 50 products, an accuracy near 70% has an
+interval about 13 points either side, so differences smaller than about 15 points are reported
+as unresolved rather than ranked.
 
 Paid steps share the $20 Anthropic cap and run in order of importance: the labeling run, scoring
 it on the gold set, Sonnet's enrichment, then the agent runs, re-priced from what has actually been

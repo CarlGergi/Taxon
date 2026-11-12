@@ -61,10 +61,13 @@ class Task:
     # The model that drafted the request, if one did, and whether a person rewrote it.
     drafted_by: str = ""
     edited: bool = False
+    # The gold product the draft started from. Tasks sharing one are scored as a cluster.
+    source: str = ""
 
     def to_json(self) -> dict:
         return {
             "id": self.id,
+            "source": self.source,
             "request": self.request,
             "checked": self.checked,
             "notes": self.notes,
@@ -87,6 +90,7 @@ class Task:
             notes=data.get("notes", ""),
             drafted_by=data.get("drafted_by", ""),
             edited=data.get("edited", False),
+            source=data.get("source", ""),
         )
 
 
@@ -169,7 +173,11 @@ def draft_tasks(items: Sequence[GoldItem], n: int, seed: int) -> list[Task]:
                 acceptable = acceptable_products(items, constraints)
                 if signature not in seen and 1 <= len(acceptable) <= MAX_ACCEPTABLE:
                     seen.add(signature)
-                    tasks.append(Task(f"task-{len(tasks) + 1:04d}", constraints, acceptable))
+                    tasks.append(
+                        Task(
+                            f"task-{len(tasks) + 1:04d}", constraints, acceptable, source=item.asin
+                        )
+                    )
                     break
     return tasks
 

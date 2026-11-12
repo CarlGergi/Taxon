@@ -132,10 +132,14 @@ def test_agrees_with_scikit_learn_at_every_level():
 
     missing = "<none>"
     for depth in (1, 2, 3):
-        gold_at = [" > ".join(g.split(" > ")[:depth]) if g.count(" > ") >= depth - 1 else missing
-                   for g in golds]
-        pred_at = [" > ".join(p.split(" > ")[:depth]) if p.count(" > ") >= depth - 1 else missing
-                   for p in preds]
+        gold_at = [
+            " > ".join(g.split(" > ")[:depth]) if g.count(" > ") >= depth - 1 else missing
+            for g in golds
+        ]
+        pred_at = [
+            " > ".join(p.split(" > ")[:depth]) if p.count(" > ") >= depth - 1 else missing
+            for p in preds
+        ]
         labels = sorted(({*gold_at, *pred_at}) - {missing})
         row = level(result, depth)
         for average, p_key, r_key in [
@@ -147,3 +151,58 @@ def test_agrees_with_scikit_learn_at_every_level():
             )
             assert row[p_key] == pytest.approx(p)
             assert row[r_key] == pytest.approx(r)
+
+
+# Intervals
+
+
+def test_wilson_matches_scipy():
+    from scipy.stats import binomtest
+
+    from eval.metrics import wilson
+
+    for k, n in ((35, 50), (1, 50), (49, 50), (7, 9)):
+        expected = binomtest(k, n).proportion_ci(method="wilson")
+        assert wilson(k, n) == pytest.approx([expected.low, expected.high])
+    assert wilson(0, 50)[0] == 0.0 and wilson(50, 50)[1] == 1.0
+    assert wilson(0, 0) is None
+    with pytest.raises(ValueError):
+        wilson(3, 2)
+
+
+def test_every_share_in_an_evaluation_has_an_interval():
+    golds = ["A > B", "A > C", "D"] * 10
+    preds = ["A > B", "A", None] * 10
+    report = evaluate(golds, preds, valid_paths=set(golds) | {"A"})
+    low, high = report["exact_leaf_accuracy_ci95"]
+    assert low < report["exact_leaf_accuracy"] < high
+    for level in report["levels"]:
+        assert "micro_precision_ci95" in level and "micro_recall_ci95" in level
+        assert "macro_precision_ci95" not in level
+    assert report["invalid_rate_ci95"] is not None
+
+
+def test_macro_intervals_come_from_a_seeded_bootstrap():
+    golds = ["A > B", "A > C", "D", "E"] * 5
+    preds = ["A > B", "A > B", "D", "D"] * 5
+    one = evaluate(golds, preds, bootstrap=200, seed=4)
+    assert one == evaluate(golds, preds, bootstrap=200, seed=4)
+    first = one["levels"][0]
+    low, high = first["macro_recall_ci95"]
+    assert low <= first["macro_recall"] <= high
+
+
+def test_the_paired_difference_keeps_each_items_answers_together():
+    from eval.metrics import paired_difference
+
+    golds = [f"P{i}" for i in range(50)]
+    better = list(golds)
+    worse = [g if i % 5 else "wrong" for i, g in enumerate(golds)]
+    report = paired_difference(golds, better, worse, seed=2)
+    assert report["n"] == 50
+    assert report["difference"] == pytest.approx(0.2)
+    low, high = report["ci95"]
+    assert 0 < low <= 0.2 <= high
+    assert paired_difference(golds, better, better)["ci95"] == [0.0, 0.0]
+    with pytest.raises(ValueError):
+        paired_difference(golds, better, worse[:3])

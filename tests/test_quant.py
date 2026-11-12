@@ -62,6 +62,25 @@ def test_latency_summary_gives_percentiles_throughput_and_hours():
     assert report["latency_p95_s"] > 1.0
     assert report["products_per_hour"] == pytest.approx(3_600 / 1.1)
     assert report["hours_per_million_products"] == pytest.approx(1.1 * 1_000_000 / 3_600)
+    low, high = report["latency_p95_s_ci95"]
+    assert low <= report["latency_p95_s"] <= high
+    low, high = report["products_per_hour_ci95"]
+    assert low <= report["products_per_hour"] <= high
+    low, high = report["hours_per_million_products_ci95"]
+    assert low <= report["hours_per_million_products"] <= high
+
+
+def test_quantized_versions_are_compared_with_full_precision_product_by_product():
+    golds = ["A", "B", "C", "D"]
+    precisions = {
+        "bf16": {"predictions": ["A", "B", "C", "x"]},
+        "int8": {"predictions": ["A", "B", "C", "x"]},
+        "int4": {"predictions": ["A", "x", "x", "x"]},
+    }
+    report = quant.against_full_precision(golds, precisions)
+    assert set(report) == {"int8", "int4"}
+    assert report["int8"]["difference"] == 0.0
+    assert report["int4"]["difference"] == pytest.approx(-0.5)
 
 
 def test_measuring_scores_each_level_and_skips_the_warm_up_in_timing():
@@ -87,6 +106,8 @@ def test_measuring_scores_each_level_and_skips_the_warm_up_in_timing():
     assert report["accuracy"]["exact_leaf_accuracy"] == 0.5
     assert report["accuracy"]["levels"]
     assert report["latency_p50_s"] == 3.0
+    assert report["predictions"] == ["Home > Kitchen", "Apparel"]
+    assert report["accuracy"]["exact_leaf_accuracy_ci95"] is not None
 
 
 def test_every_precision_is_named_with_its_bits():

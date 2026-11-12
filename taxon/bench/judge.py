@@ -14,6 +14,7 @@ import math
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
+from eval.metrics import bootstrap_interval, wilson
 from taxon.bench.tasks import Constraint, Task, describe, numeric_price
 from taxon.labeling.llm import LLMRequest, ModelConfig, Status, Usage
 from taxon.labeling.pricing import cost_of, worst_case_cost
@@ -259,14 +260,22 @@ def agreement(judged: Sequence[dict], hand: Sequence[dict]) -> dict:
         "judge_unsure": len(calls) - len(answered),
         "answered": len(answered),
         "agreement": rate,
+        "agreement_ci95": wilson(agreed, len(answered)),
         "kappa": _kappa(answered),
+        "kappa_ci95": bootstrap_interval(
+            lambda idx: _kappa([answered[i] for i in idx]), len(answered)
+        ),
         "confusion": {
             f"judge_{a}_hand_{b}": sum(1 for x, y in answered if (x, y) == (a, b))
             for a in (MEETS, FAILS)
             for b in (MEETS, FAILS)
         },
         "per_condition": {
-            c: {"answered": len(v), "agreement": sum(v) / len(v)}
+            c: {
+                "answered": len(v),
+                "agreement": sum(v) / len(v),
+                "agreement_ci95": wilson(sum(v), len(v)),
+            }
             for c, v in sorted(per_condition.items())
         },
         "bar": AGREEMENT_BAR,

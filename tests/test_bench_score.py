@@ -218,3 +218,41 @@ def test_the_latest_taxon_enrichment_is_cited_without_naming_its_run(tmp_path, m
     costs = cli._enrichment_costs(None)
     assert costs["taxon"]["local_hours_per_million_products"] == 800.0
     assert "sonnet" not in costs
+
+
+# Tasks from the same product
+
+
+def test_tasks_from_one_product_are_resampled_together():
+    from taxon.bench.score import cluster_interval
+
+    # Forty tasks from two products: twenty that always succeed, twenty that never do.
+    values = {f"t{i}": float(i < 20) for i in range(40)}
+    as_tasks = cluster_interval(values, None, seed=1)
+    as_products = cluster_interval(values, {t: ("P1" if v else "P2") for t, v in values.items()}, 1)
+    assert as_tasks[1] - as_tasks[0] < 0.4
+    assert as_products == [0.0, 1.0]
+
+
+def test_the_report_counts_source_products_and_gives_every_metric_an_interval():
+    tasks = [
+        Task("t1", [CHEAP, LIMIT], ["G1"], "a cheap tote", True, source="G1"),
+        Task("t2", [CHEAP, LIMIT], ["G1"], "a cheap bag", True, source="G1"),
+    ]
+    rows = [row(c, r, t.id, ["G1"]) for c in ("raw", "taxon") for r in (1, 2) for t in tasks]
+    report = score.score(
+        tasks, rows, [], [], ["raw", "taxon"], {}, seed=1, gold_ids=GOLD, catalog_ids=CATALOG
+    )
+    assert report["source_products"] == 1
+    over = report["catalogs"]["taxon"]["over_tasks"]
+    assert set(over) == {
+        "success",
+        "precision",
+        "empty_answers",
+        "searches",
+        "model_calls",
+        "tokens",
+        "cost",
+    }
+    assert over["success"] == {"mean": 1.0, "ci95": [1.0, 1.0]}
+    assert report["success_minus_raw"]["taxon"]["source_products"] == 1

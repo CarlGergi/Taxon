@@ -2,8 +2,13 @@
 
 For each catalog and run: task success (the agent's first product meets every requirement),
 precision of everything it returned, how often it returned nothing, and the searches, model calls,
-tokens and dollars a task took. Across runs, the mean and the spread. Against the raw catalog,
-the paired difference in success with a bootstrap interval over tasks.
+tokens and dollars a task took. Across runs, the mean and the spread. Over tasks, each metric's
+mean with a 95% bootstrap interval, and against the raw catalog, the paired difference in success
+with one too.
+
+Tasks drafted from the same gold product share that product, so they are not independent. Every
+interval resamples source products (a cluster bootstrap), taking all of a product's tasks
+together; a task with no recorded source counts as its own product.
 
 A returned product counts as acceptable if it is one of the task's gold products or the pooled
 judging found it meets the task. Scoring refuses while any returned product is still unjudged or
@@ -131,27 +136,93 @@ def spread(values: Sequence[float | None]) -> dict:
     }
 
 
-def per_task_success(rows: Sequence[Mapping], accepted: Mapping[str, set[str]]) -> dict[str, float]:
-    """Each task's success averaged over runs, which is what the paired comparison resamples."""
-    by_task: dict[str, list[bool]] = defaultdict(list)
+def _row_value(row: Mapping, accepted: Mapping[str, set[str]], metric: str) -> float | None:
+    result = outcome(row["returned"], accepted[row["task"]])
+    if metric == "success":
+        return float(result["success"])
+    if metric == "precision":
+        return result["precision"]
+    if metric == "empty_answers":
+        return float(result["empty"])
+    if metric == "tokens":
+        return float(_tokens(row))
+    return float(row[metric])
+
+
+def per_task(
+    rows: Sequence[Mapping], accepted: Mapping[str, set[str]], metric: str = "success"
+) -> dict[str, float]:
+    """Each task's value of a metric, averaged over runs. Tasks where it is undefined drop out."""
+    by_task: dict[str, list[float]] = defaultdict(list)
     for row in rows:
-        by_task[row["task"]].append(outcome(row["returned"], accepted[row["task"]])["success"])
+        value = _row_value(row, accepted, metric)
+        if value is not None:
+            by_task[row["task"]].append(value)
     return {task: sum(v) / len(v) for task, v in by_task.items()}
 
 
-def paired_difference(
-    a: Mapping[str, float], b: Mapping[str, float], seed: int, resamples: int = RESAMPLES
-) -> dict:
-    """Mean of a minus b over shared tasks, with a 95% bootstrap interval over tasks."""
-    tasks = sorted(set(a) & set(b))
-    diffs = [a[t] - b[t] for t in tasks]
+def per_task_success(rows: Sequence[Mapping], accepted: Mapping[str, set[str]]) -> dict[str, float]:
+    """Each task's success averaged over runs, which is what the paired comparison resamples."""
+    return per_task(rows, accepted, "success")
+
+
+def cluster_interval(
+    values: Mapping[str, float],
+    groups: Mapping[str, str] | None,
+    seed: int,
+    resamples: int = RESAMPLES,
+) -> list[float] | None:
+    """A 95% interval for the mean over tasks, resampling whole groups of tasks."""
+    if not values:
+        return None
+    groups = groups or {}
+    clusters: dict[str, list[float]] = defaultdict(list)
+    for task, value in sorted(values.items()):
+        clusters[groups.get(task, task)].append(value)
+    members = list(clusters.values())
     rng = random.Random(seed)
-    means = sorted(statistics.mean(rng.choices(diffs, k=len(diffs))) for _ in range(resamples))
+    means = []
+    for _ in range(resamples):
+        drawn = [v for cluster in rng.choices(members, k=len(members)) for v in cluster]
+        means.append(statistics.mean(drawn))
+    means.sort()
+    return [means[int(0.025 * resamples)], means[int(0.975 * resamples) - 1]]
+
+
+def paired_difference(
+    a: Mapping[str, float],
+    b: Mapping[str, float],
+    seed: int,
+    resamples: int = RESAMPLES,
+    groups: Mapping[str, str] | None = None,
+) -> dict:
+    """Mean of a minus b over shared tasks, with a 95% bootstrap interval over source products."""
+    tasks = sorted(set(a) & set(b))
+    diffs = {t: a[t] - b[t] for t in tasks}
+    groups = groups or {}
     return {
         "tasks": len(tasks),
-        "difference": statistics.mean(diffs),
-        "ci95": [means[int(0.025 * resamples)], means[int(0.975 * resamples) - 1]],
+        "source_products": len({groups.get(t, t) for t in tasks}),
+        "difference": statistics.mean(diffs.values()),
+        "ci95": cluster_interval(diffs, groups, seed, resamples),
     }
+
+
+def task_level(
+    rows: Sequence[Mapping],
+    accepted: Mapping[str, set[str]],
+    groups: Mapping[str, str],
+    seed: int,
+) -> dict:
+    """Each metric as a mean over tasks (each averaged over runs), with its cluster interval."""
+    report = {}
+    for metric in _METRICS:
+        values = per_task(rows, accepted, metric)
+        report[metric] = {
+            "mean": statistics.mean(values.values()) if values else None,
+            "ci95": cluster_interval(values, groups, seed),
+        }
+    return report
 
 
 def check_complete(
@@ -195,6 +266,8 @@ def score(
         "runs_per_catalog": runs,
         "catalogs": {},
     }
+    groups = {t.id: t.source or t.id for t in tasks}
+    report["source_products"] = len(set(groups.values()))
     successes = {}
     for condition in conditions:
         mine = [r for r in rows if r["condition"] == condition]
@@ -204,13 +277,14 @@ def score(
         ]
         report["catalogs"][condition] = {
             **{m: spread([p[m] for p in per_run]) for m in _METRICS},
+            "over_tasks": task_level(mine, accepted, groups, seed),
             "runs": per_run,
             "enrichment": dict(enrichment.get(condition, {})),
         }
         successes[condition] = per_task_success(mine, accepted)
     if BASELINE in conditions:
         report["success_minus_raw"] = {
-            c: paired_difference(successes[c], successes[BASELINE], seed)
+            c: paired_difference(successes[c], successes[BASELINE], seed, groups=groups)
             for c in conditions
             if c != BASELINE
         }
