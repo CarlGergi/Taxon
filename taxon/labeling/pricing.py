@@ -1,4 +1,4 @@
-"""Batch prices in USD per million tokens, read from each vendor's pricing page on 2026-11-03.
+"""Prices in USD per million tokens, read from each vendor's pricing page on 2026-11-03.
 
 https://platform.claude.com/docs/en/about-claude/pricing
 https://developers.openai.com/api/docs/pricing
@@ -37,6 +37,30 @@ PRICES = {
 }
 
 
+# Interactive (non-batch) prices, for the shopping agent, which needs each reply before its next
+# call. Cache writes use the 5-minute rate, 1.25 times input; reads are a tenth of input.
+INTERACTIVE_PRICES = {
+    ("anthropic", "claude-haiku-5-5"): Price(0.10, 0.01, 0.125, 0.50),
+    ("anthropic", "claude-sonnet-5-5"): Price(2.00, 0.10, 2.50, 10.00),
+}
+
+
+def interactive_price_for(config: ModelConfig) -> Price:
+    try:
+        return INTERACTIVE_PRICES[(config.vendor, config.model)]
+    except KeyError:
+        raise KeyError(f"no interactive price recorded for {config.model}") from None
+
+
+def cost_at(usage: Usage, price: Price) -> float:
+    return (
+        usage.input_tokens * price.input
+        + usage.cached_tokens * price.cached_input
+        + usage.cache_write_tokens * price.cache_write
+        + usage.output_tokens * price.output
+    ) / MILLION
+
+
 def price_for(config: ModelConfig) -> Price:
     """Raises for an unknown model, so a missing price can never count as free."""
     try:
@@ -46,13 +70,7 @@ def price_for(config: ModelConfig) -> Price:
 
 
 def cost_of(usage: Usage, config: ModelConfig) -> float:
-    price = price_for(config)
-    return (
-        usage.input_tokens * price.input
-        + usage.cached_tokens * price.cached_input
-        + usage.cache_write_tokens * price.cache_write
-        + usage.output_tokens * price.output
-    ) / MILLION
+    return cost_at(usage, price_for(config))
 
 
 def worst_case_cost(request: LLMRequest) -> float:

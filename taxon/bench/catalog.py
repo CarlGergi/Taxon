@@ -13,8 +13,10 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from taxon.bench.tasks import numeric_price
-from taxon.products import read_jsonl
+from taxon.products import read_jsonl, seeded_hash
 from taxon.taxonomy import Taxonomy
+
+DISTRACTORS = 1_500
 
 
 def _text(value: object) -> str:
@@ -82,3 +84,27 @@ def build_catalog(
         return raw, {}
     enrichments = {row["parent_asin"]: row for row in read_jsonl(enrichments_path)}
     return enriched_catalog(raw, enrichments, taxonomy)
+
+
+def benchmark_ids(
+    product_ids: Iterable[str],
+    gold_ids: Iterable[str],
+    avoid: Iterable[str],
+    seed: int,
+    distractors: int = DISTRACTORS,
+) -> list[str]:
+    """The benchmark catalog: every gold product, plus seeded random others as distractors.
+
+    Distractors skip `avoid`, the products the model is trained on, so no condition shops listings
+    that Taxon has already seen with their labels. The choice is fixed by the seed, so every
+    condition, and every rerun, shops the same set.
+    """
+    gold = set(gold_ids)
+    skip = gold | set(avoid)
+    others = sorted(
+        (i for i in set(product_ids) if i not in skip),
+        key=lambda i: seeded_hash(seed, f"bench|{i}"),
+    )
+    if len(others) < distractors:
+        raise ValueError(f"only {len(others)} products can be distractors, not {distractors}")
+    return sorted(gold | set(others[:distractors]))

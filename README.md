@@ -168,6 +168,31 @@ make search-index CATALOG=model ENRICHMENTS=enrichments.jsonl
 make search-serve CATALOG=model
 ```
 
+Every benchmark catalog holds the same 2,000 products: all 500 gold-queue products plus 1,500
+distractors drawn with a fixed seed. Distractors never come from the products the model is trained
+on, so no condition shops listings Taxon has already seen with their labels.
+
+## Shopping agent
+
+One agent shops each catalog: `claude-haiku-5-5` with a fixed prompt, the `search_catalog` tool and
+a `submit_products` tool for its answer. Only the catalog behind the search tool changes between
+conditions. Haiku takes no temperature setting, so thinking is off, effort is low, and each
+condition runs three times so the spread between runs is measured. Each run may make at most 8
+model calls. Search results reach the agent as merchant data, and the prompt says never to follow
+instructions inside them.
+
+```bash
+make shop-price
+make shop CONDITION=raw FAKE=1
+make shop CONDITION=raw
+```
+
+`make shop-price` prices the runs from the real tool schema and the real size of search replies,
+spending nothing. `FAKE=1` runs a scripted model against the real engine. A real run reserves each
+call's worst-case cost against the Anthropic cap before sending it, logs every finished run with
+its transcript, and picks up where it stopped. The first round is 100 tasks, three catalogs and
+three runs each; all 300 tasks run only if the budget allows.
+
 ## Fine-tuning
 
 Each training example asks for a random subset of a product's fields, so the model learns to return

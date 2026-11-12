@@ -76,7 +76,7 @@ def server_parameters(index: Path, binary: Path = BINARY) -> StdioServerParamete
     return StdioServerParameters(command=str(binary), args=["serve", "--index", str(index)])
 
 
-def _read(result) -> dict:
+def read_result(result) -> dict:
     if result.is_error:
         return {"error": " ".join(block.text for block in result.content)}
     return result.structured_content
@@ -86,7 +86,7 @@ async def _search_all(index: Path, requests: Sequence[dict], binary: Path) -> li
     async with stdio_client(server_parameters(index, binary)) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            return [_read(await session.call_tool(TOOL, request)) for request in requests]
+            return [read_result(await session.call_tool(TOOL, request)) for request in requests]
 
 
 def search_many(index: Path, requests: Sequence[dict], binary: Path = BINARY) -> list[dict]:

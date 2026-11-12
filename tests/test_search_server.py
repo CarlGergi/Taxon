@@ -187,7 +187,15 @@ def test_the_reproduce_step_gives_the_same_report_twice(binary, tmp_path):
     assert search_report(PRODUCTS, tmp_path / "a") == search_report(PRODUCTS, tmp_path / "b")
 
 
-def test_the_command_builds_and_searches_a_catalog(binary, tmp_path, capsys):
+@pytest.fixture
+def every_product_benchmarked(monkeypatch):
+    """These small catalogs have no gold queue, so the benchmark holds all of them."""
+    monkeypatch.setattr(cli, "_benchmark_products", lambda d: read_jsonl(d / "products.jsonl"))
+
+
+def test_the_command_builds_and_searches_a_catalog(
+    binary, tmp_path, capsys, every_product_benchmarked
+):
     write_jsonl(tmp_path / "products.jsonl", PRODUCTS)
     argv = ["search-index"]
     assert cli.main(argv, tmp_path / "t", tmp_path / "l", tmp_path) == 0
@@ -198,7 +206,7 @@ def test_the_command_builds_and_searches_a_catalog(binary, tmp_path, capsys):
 
 
 def test_the_command_builds_an_enriched_catalog_under_its_own_name(
-    binary, tmp_path, capsys, monkeypatch, taxonomy
+    binary, tmp_path, capsys, monkeypatch, taxonomy, every_product_benchmarked
 ):
     monkeypatch.setattr(cli, "fetch", lambda _pin: "unused")
     monkeypatch.setattr(cli.Taxonomy, "load", staticmethod(lambda _path: taxonomy))
@@ -234,3 +242,14 @@ def test_a_missing_toolchain_is_reported_clearly(monkeypatch):
     monkeypatch.setattr(search.subprocess, "run", no_rustup)
     with pytest.raises(search.RustMissing, match="rustup"):
         search.build_binary()
+
+
+def test_the_command_indexes_only_the_benchmark_products(binary, tmp_path, capsys, monkeypatch):
+    write_jsonl(tmp_path / "products.jsonl", PRODUCTS)
+    write_jsonl(tmp_path / "gold_queue.jsonl", [{"parent_asin": "C"}])
+    chosen = sorted(p["parent_asin"] for p in PRODUCTS)[:2]
+    monkeypatch.setattr(cli.agent, "benchmark_catalog_ids", lambda products, queue: chosen)
+    assert cli.main(["search-index"], tmp_path / "t", tmp_path / "l", tmp_path) == 0
+    assert json.loads(capsys.readouterr().out)["documents"] == 2
+    indexed = read_jsonl(tmp_path / "catalogs" / "raw.jsonl")
+    assert [row["id"] for row in indexed] == chosen

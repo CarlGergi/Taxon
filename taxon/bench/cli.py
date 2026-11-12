@@ -1,4 +1,4 @@
-"""Commands for building the CatalogBench task set and its search indexes."""
+"""Commands for CatalogBench: tasks, the benchmark catalog, search indexes and agent runs."""
 
 from __future__ import annotations
 
@@ -6,9 +6,10 @@ import argparse
 import json
 from pathlib import Path
 
-from taxon.bench import judging, search
+from taxon.bench import agent, judging, search
 from taxon.bench.catalog import build_catalog
 from taxon.bench.tasks import (
+    FINAL_TASK_COUNT,
     FIRST_TASK_COUNT,
     check_tasks,
     draft_tasks,
@@ -47,6 +48,18 @@ def _inputs(labels_path: Path, derived: Path):
     return taxonomy, by_asin, items, training_ids
 
 
+def _benchmark_ids(derived: Path) -> list[str]:
+    products = read_jsonl(derived / "products.jsonl")
+    queue = [row["parent_asin"] for row in read_jsonl(derived / "gold_queue.jsonl")]
+    return agent.benchmark_catalog_ids(products, queue)
+
+
+def _benchmark_products(derived: Path) -> list[dict]:
+    """The products every benchmark catalog holds: the same fixed set for each condition."""
+    ids = set(_benchmark_ids(derived))
+    return [p for p in read_jsonl(derived / "products.jsonl") if p["parent_asin"] in ids]
+
+
 def main(
     argv: list[str] | None = None,
     tasks_path: Path = TASKS_PATH,
@@ -66,6 +79,14 @@ def main(
     index = commands.add_parser("search-index", help="build a catalog and its search index")
     index.add_argument("--name", default=search.RAW)
     index.add_argument("--enrichments", type=Path, help="JSONL of parent_asin, path, attributes")
+    commands.add_parser("catalog", help="choose the benchmark catalog once: gold plus distractors")
+    shop = commands.add_parser("shop", help="run the shopping agent on one catalog")
+    shop.add_argument("--condition", required=True, help="the search index to shop, such as raw")
+    shop.add_argument("--runs", type=int, default=3)
+    shop.add_argument("--tasks", type=int, default=FIRST_TASK_COUNT, help="the first N tasks")
+    shop.add_argument("--fake", action="store_true", help="a scripted model, spending nothing")
+    price = commands.add_parser("shop-price", help="price the agent runs, spending nothing")
+    price.add_argument("--runs", type=int, default=3)
     query = commands.add_parser("search", help="run one search_catalog request, given as JSON")
     query.add_argument("request", type=json.loads)
     query.add_argument("--name", default=search.RAW)
@@ -78,7 +99,7 @@ def main(
     if args.command == "search-index":
         if (args.name == search.RAW) != (args.enrichments is None):
             parser.error("the raw catalog takes no enrichments, and any other needs them")
-        products = read_jsonl(derived / "products.jsonl")
+        products = _benchmark_products(derived)
         taxonomy = Taxonomy.load(fetch(TAXONOMY)) if args.enrichments else None
         rows, report = build_catalog(products, args.enrichments, taxonomy)
         manifest = search.index_catalog(rows, args.name, derived)
@@ -87,6 +108,19 @@ def main(
     if args.command == "search":
         response = search.search_many(search.index_dir(args.name, derived), [args.request])[0]
         print(json.dumps(response, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "catalog":
+        ids = set(_benchmark_ids(derived))
+        queue = {row["parent_asin"] for row in read_jsonl(derived / "gold_queue.jsonl")}
+        print(json.dumps({"products": len(ids), "gold": len(ids & queue)}, indent=2))
+        return 0
+    if args.command == "shop-price":
+        products = _benchmark_products(derived)
+        titles = [p["title"] for p in sorted(products, key=lambda p: p["parent_asin"])]
+        index = search.index_dir(search.RAW, derived)
+        counts = (FIRST_TASK_COUNT, FINAL_TASK_COUNT)
+        print(json.dumps(agent.price_agent(index, titles, counts, args.runs), indent=2))
         return 0
 
     taxonomy, by_asin, items, training_ids = _inputs(labels_path, derived)
@@ -105,6 +139,12 @@ def main(
             read,
             print,
         )
+        print(json.dumps(report, indent=2))
+        return 0
+    if args.command == "shop":
+        tasks = agent.runnable(existing)[: args.tasks]
+        index = search.index_dir(args.condition, derived)
+        report = agent.shop_condition(args.condition, tasks, args.runs, index, args.fake)
         print(json.dumps(report, indent=2))
         return 0
     if args.command == "draft":

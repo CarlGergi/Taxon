@@ -1,11 +1,12 @@
 .PHONY: setup test lint reproduce clean backup gold label-fake label-dry-run label-first \
 	label-gold-pool label-attributes tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu \
-	judge-price judge-sample judge-review judge-agreement judge-pool rl-tiny rl-gpu measure
+	judge-price judge-sample judge-review judge-agreement judge-pool rl-tiny rl-gpu measure shop-price shop
 
 TARGET ?= 200
 TASKS ?= 100
 BACKUP_DIR ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/taxon-backups
 CATALOG ?= raw
+CONDITION ?= raw
 RUN ?= qwen-lora
 PRODUCTS ?= 2000
 STEPS ?= 2000
@@ -92,6 +93,14 @@ judge-review judge-agreement:
 # The catalog search engine. An enriched catalog takes CATALOG=name ENRICHMENTS=path.
 search-index:
 	uv run python -m taxon.bench search-index --name $(CATALOG) $(if $(ENRICHMENTS),--enrichments "$(ENRICHMENTS)")
+
+# Price the shopping agent's runs, spending nothing.
+shop-price:
+	uv run python -m taxon.bench shop-price
+
+# make shop CONDITION=raw [FAKE=1]: the agent on one catalog, 3 runs of the first 100 tasks.
+shop:
+	uv run python -m taxon.bench shop --condition $(CONDITION) $(if $(FAKE),--fake)
 
 # make search REQUEST='{"query": "red chef knife", "max_price": 50}'
 search:
