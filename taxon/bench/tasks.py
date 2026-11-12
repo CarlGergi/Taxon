@@ -58,6 +58,9 @@ class Task:
     request: str = ""
     checked: bool = False
     notes: str = field(default="")
+    # The model that drafted the request, if one did, and whether a person rewrote it.
+    drafted_by: str = ""
+    edited: bool = False
 
     def to_json(self) -> dict:
         return {
@@ -65,6 +68,8 @@ class Task:
             "request": self.request,
             "checked": self.checked,
             "notes": self.notes,
+            "drafted_by": self.drafted_by,
+            "edited": self.edited,
             "acceptable": self.acceptable,
             "constraints": [
                 {k: v for k, v in asdict(c).items() if v is not None} for c in self.constraints
@@ -80,6 +85,8 @@ class Task:
             request=data["request"],
             checked=data["checked"],
             notes=data.get("notes", ""),
+            drafted_by=data.get("drafted_by", ""),
+            edited=data.get("edited", False),
         )
 
 
@@ -300,14 +307,36 @@ def review(
     read,
     write,
 ) -> int:
-    """Walk through written tasks that are not yet checked. Returns how many were approved."""
+    """Walk through unchecked tasks: fix the request's wording, then the acceptable products.
+
+    A drafted request is shown for a person to keep or rewrite; an empty one must be written. A
+    task whose request still breaks the wording rules stays unchecked. Returns how many were
+    approved.
+    """
     approved = 0
     for task in tasks:
-        if task.checked or not task.request.strip():
+        if task.checked:
             continue
-        write(f"\n{task.id}: {task.request}")
+        write(f"\n{task.id}")
         for constraint in task.constraints:
             write(f"  must: {describe(constraint)}")
+        source = f" (drafted by {task.drafted_by})" if task.drafted_by and not task.edited else ""
+        write(f"  request{source}: {task.request or '(none yet)'}")
+        for problem in lint_request(task.request, task.constraints):
+            write(f"  problem: {problem}")
+        prompt = "  Enter keeps it, or type a better request (q quits): "
+        if not task.request.strip():
+            prompt = "  type the request (q quits): "
+        typed = read(prompt).strip()
+        if typed.lower() == "q":
+            return approved
+        if typed:
+            task.request = " ".join(typed.split())
+            task.edited = True
+        problems = lint_request(task.request, task.constraints)
+        if problems:
+            write(f"  still needs work, so this task stays unchecked: {'; '.join(problems)}")
+            continue
         kept = []
         for asin in task.acceptable:
             answer = read(f"  acceptable? {titles.get(asin, asin)[:80]} [Y/n/q] ").strip().lower()

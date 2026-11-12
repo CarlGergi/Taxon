@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from taxon.bench import agent, judging, search
+from taxon.bench import agent, drafting, judging, score, search
 from taxon.bench.catalog import build_catalog
 from taxon.bench.tasks import (
     FINAL_TASK_COUNT,
@@ -48,6 +48,52 @@ def _inputs(labels_path: Path, derived: Path):
     return taxonomy, by_asin, items, training_ids
 
 
+def drafting_runner(fake: bool):
+    return drafting.runner(fake)
+
+
+CONDITIONS = ("raw", "sonnet", "taxon")
+SONNET_ENRICHMENT = DATA_DIR / "labeling" / "results" / "enrichment.json"
+TAXON_RUNS = DATA_DIR / "rl"
+
+
+def _enrichment_costs(taxon_run: str | None) -> dict:
+    costs = {"raw": score.enrichment_cost(dollars=0.0, products=1)}
+    if SONNET_ENRICHMENT.exists():
+        report = json.loads(SONNET_ENRICHMENT.read_text(encoding="utf-8"))
+        costs["sonnet"] = score.enrichment_cost(dollars=report["cost"], products=report["products"])
+    if taxon_run:
+        path = TAXON_RUNS / taxon_run / "enrichment.json"
+        report = json.loads(path.read_text(encoding="utf-8"))
+        costs["taxon"] = score.enrichment_cost(
+            hours_per_million=report["hours_per_million_products"], hardware=report["hardware"]
+        )
+    return costs
+
+
+def _score(args, tasks, items, derived: Path) -> int:
+    space = judging.Judging(judging.JUDGING_DIR, DATA_DIR / "labeling")
+    rows = agent.RunLog(agent.agent_dir(False)).rows()
+    try:
+        report = score.score(
+            agent.runnable(tasks),
+            rows,
+            space.load(space.judged),
+            space.load(space.hand),
+            args.conditions,
+            _enrichment_costs(args.taxon_run),
+            SEED,
+            {item.asin for item in items},
+            set(_benchmark_ids(derived)),
+        )
+    except score.NotReady as waiting:
+        print(f"NOT READY: {waiting}")
+        return 1
+    score.write_report(report)
+    print(json.dumps(report, indent=2))
+    return 0
+
+
 def _benchmark_ids(derived: Path) -> list[str]:
     products = read_jsonl(derived / "products.jsonl")
     queue = [row["parent_asin"] for row in read_jsonl(derived / "gold_queue.jsonl")]
@@ -73,6 +119,10 @@ def main(
     commands = parser.add_subparsers(dest="command", required=True)
     draft = commands.add_parser("draft", help="propose tasks from the hand labels")
     draft.add_argument("--n", type=int, default=FIRST_TASK_COUNT)
+    draft.add_argument(
+        "--no-requests", action="store_true", help="leave requests blank instead of drafting them"
+    )
+    draft.add_argument("--fake", action="store_true", help="draft requests without a model")
     commands.add_parser("review", help="hand-check written tasks in the terminal")
     check = commands.add_parser("check", help="validate the finished task set")
     check.add_argument("--need", type=int, default=FIRST_TASK_COUNT)
@@ -87,6 +137,9 @@ def main(
     shop.add_argument("--fake", action="store_true", help="a scripted model, spending nothing")
     price = commands.add_parser("shop-price", help="price the agent runs, spending nothing")
     price.add_argument("--runs", type=int, default=3)
+    scoring = commands.add_parser("score", help="score the agent runs on every catalog")
+    scoring.add_argument("--conditions", nargs="+", default=list(CONDITIONS))
+    scoring.add_argument("--taxon-run", default=None, help="the run whose enrichment.json to cite")
     query = commands.add_parser("search", help="run one search_catalog request, given as JSON")
     query.add_argument("request", type=json.loads)
     query.add_argument("--name", default=search.RAW)
@@ -141,6 +194,8 @@ def main(
         )
         print(json.dumps(report, indent=2))
         return 0
+    if args.command == "score":
+        return _score(args, existing, items, derived)
     if args.command == "shop":
         tasks = agent.runnable(existing)[: args.tasks]
         index = search.index_dir(args.condition, derived)
@@ -151,6 +206,11 @@ def main(
         tasks = merge_drafts(existing, draft_tasks(items, args.n, SEED))
         save_tasks(tasks_path, tasks)
         print(f"{len(tasks)} tasks in {tasks_path}, from {len(items)} hand-labeled products")
+        if not args.no_requests:
+            report = drafting.draft_requests(tasks, drafting_runner(args.fake))
+            save_tasks(tasks_path, tasks)
+            print(json.dumps(report, indent=2))
+            print("Check and edit each request with: make tasks-review")
         if len(tasks) < args.n:
             print(f"Only {len(tasks)} of {args.n} are possible. Label more products to draft more.")
     elif args.command == "review":

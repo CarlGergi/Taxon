@@ -20,6 +20,7 @@ from taxon.labeling.vendors import (
     AnthropicBatchClient,
     GoogleBatchClient,
     OpenAIBatchClient,
+    OpenAIDirectClient,
     build_clients,
 )
 
@@ -540,6 +541,69 @@ def test_a_shell_variable_cannot_redirect_keys(monkeypatch):
     assert OPENAI_URL in str(OpenAIBatchClient(KEY).client.base_url)
     google = GoogleBatchClient(KEY)
     assert google.client._api_client.get_read_only_http_options()["base_url"].startswith(GOOGLE_URL)
+
+
+# OpenAI, request by request
+
+
+def direct_route(server, status=200, row=None):
+    def reply(handler, body):
+        sent = json.loads(body)
+        handler.server.sent.append(sent)
+        if status != 200:
+            return handler._send(status, {"error": {"message": "nope", "type": "server_error"}})
+        answer = (row or openai_row("unused"))["response"]["body"]
+        return handler._send(
+            200,
+            {"id": "c", "object": "chat.completion", "created": 1, "model": LUNA.model, **answer},
+        )
+
+    server.sent = []
+    server.routes = [(r"/v1/chat/completions", "POST", reply)]
+
+
+def test_a_direct_request_sends_the_batch_body_and_reads_the_reply_the_same_way(server):
+    direct_route(server)
+    client = OpenAIDirectClient(KEY, base_url=f"{server.url}/v1")
+    r = request(LUNA)
+    batch_id = client.submit([r])
+    assert client.poll(batch_id) is True
+    [result] = client.results(batch_id)
+    assert result.key == r.key and result.status is Status.OK
+    assert result.text == '{"choice": 3}'
+    assert (result.usage.input_tokens, result.usage.cached_tokens) == (10, 100)
+    sent = dict(server.sent[0])
+    expected = OpenAIBatchClient.body(r)
+    assert {k: sent[k] for k in expected} == json.loads(json.dumps(expected))
+
+
+def test_a_failed_direct_request_comes_back_failed_to_be_retried(server):
+    direct_route(server, status=400)
+    client = OpenAIDirectClient(KEY, base_url=f"{server.url}/v1")
+    batch_id = client.submit([request(LUNA)])
+    [result] = client.results(batch_id)
+    assert result.status is Status.FAILED
+
+
+def test_the_direct_client_still_reads_batches_the_batch_client_started(server):
+    openai_routes(server, [openai_row("k1")], status="cancelled")
+    client = OpenAIDirectClient(KEY, base_url=f"{server.url}/v1")
+    assert client.poll("batch_1") is True
+    assert [r.key for r in client.results("batch_1")] == ["k1"]
+
+
+def test_the_direct_client_costs_twice_the_batch_price():
+    assert OpenAIDirectClient.price_factor == 2.0
+    assert getattr(OpenAIBatchClient, "price_factor", 1.0) == 1.0
+
+
+def test_only_openai_can_be_sent_directly():
+    secrets = Secrets({"ANTHROPIC_API_KEY": "a", "OPENAI_API_KEY": "b"})
+    clients = build_clients(secrets, ("anthropic", "openai"), direct=["openai"])
+    assert isinstance(clients["openai"], OpenAIDirectClient)
+    assert isinstance(clients["anthropic"], AnthropicBatchClient)
+    with pytest.raises(ValueError, match="anthropic"):
+        build_clients(secrets, ("anthropic",), direct=["anthropic"])
 
 
 def test_build_clients_names_the_missing_key():

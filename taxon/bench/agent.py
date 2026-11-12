@@ -448,12 +448,14 @@ def price_plan(
     cap: float,
 ) -> dict:
     base = len(json.dumps([SYSTEM, [tool, SUBMIT_TOOL]])) // _CHARS_PER_TOKEN + _REQUEST_TOKENS
+    expected = run_cost(base, reply_tokens, SCENARIOS[0])
     plans = {}
     for tasks in task_counts:
         n = tasks * conditions * runs
         plans[str(tasks)] = {
             "agent_runs": n,
             **{s.name: n * run_cost(base, reply_tokens, s) for s in SCENARIOS},
+            "runs_that_fit": runs_that_fit(tasks * conditions * expected, cap - spent, runs),
         }
     return {
         "model": AGENT.model,
@@ -465,6 +467,17 @@ def price_plan(
         "anthropic_spent": spent,
         "anthropic_cap": cap,
     }
+
+
+def runs_that_fit(cost_per_round: float, remaining: float, most: int, fewest: int = 2) -> int:
+    """How many runs per catalog the remaining budget covers at the expected cost, most first.
+
+    Below `fewest` the answer is 0: too few runs to measure spread is not worth the money.
+    """
+    for runs in range(most, fewest - 1, -1):
+        if runs * cost_per_round <= remaining:
+            return runs
+    return 0
 
 
 async def _measure(index: Path, queries: Sequence[str]) -> tuple[dict, float]:

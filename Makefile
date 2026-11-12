@@ -1,12 +1,13 @@
 .PHONY: setup test lint reproduce clean backup gold label-fake label-dry-run label-first \
 	label-gold-pool label-attributes tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu \
-	judge-price judge-sample judge-review judge-agreement judge-pool rl-tiny rl-gpu measure shop-price shop
+	judge-price judge-sample judge-review judge-agreement judge-pool rl-tiny rl-gpu measure shop-price shop enrich-price enrich enrich-taxon bench-score
 
 TARGET ?= 200
 TASKS ?= 100
 BACKUP_DIR ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/taxon-backups
 CATALOG ?= raw
 CONDITION ?= raw
+RUNS ?= 3
 RUN ?= qwen-lora
 PRODUCTS ?= 2000
 STEPS ?= 2000
@@ -73,8 +74,9 @@ label-gold-pool:
 label-attributes:
 	uv run python -m taxon.labeling run --attributes
 
+# Drafts requests with gpt-6-luna (about a cent of OpenAI credit); FAKE=1 drafts stand-ins for free.
 tasks-draft:
-	uv run python -m taxon.bench draft --n $(TASKS)
+	uv run python -m taxon.bench draft --n $(TASKS) $(if $(FAKE),--fake)
 
 tasks-review:
 	uv run python -m taxon.bench review
@@ -94,13 +96,30 @@ judge-review judge-agreement:
 search-index:
 	uv run python -m taxon.bench search-index --name $(CATALOG) $(if $(ENRICHMENTS),--enrichments "$(ENRICHMENTS)")
 
+# Price Sonnet's enrichment of the benchmark catalog from real token counts, spending nothing.
+enrich-price:
+	uv run python -m taxon.labeling enrich-price
+
+# Sonnet enriches the benchmark catalog; refuses before labeling, gold scoring and a fitting price.
+enrich:
+	uv run python -m taxon.labeling enrich
+
+# Taxon enriches the benchmark catalog with a trained run, on this machine.
+enrich-taxon:
+	uv run python -m taxon.rl enrich --name $(RUN) --images data/images
+
+# The benchmark report, once every catalog's runs are in and every returned product is judged.
+bench-score:
+	uv run python -m taxon.bench score $(if $(TAXON_RUN),--taxon-run $(TAXON_RUN))
+
 # Price the shopping agent's runs, spending nothing.
 shop-price:
 	uv run python -m taxon.bench shop-price
 
-# make shop CONDITION=raw [FAKE=1]: the agent on one catalog, 3 runs of the first 100 tasks.
+# make shop CONDITION=raw RUNS=1 [FAKE=1]: the agent on one catalog, runs 1..RUNS of the first 100 tasks.
+# Finished runs are skipped, so RUNS=1 on every catalog, then RUNS=2, keeps the catalogs even.
 shop:
-	uv run python -m taxon.bench shop --condition $(CONDITION) $(if $(FAKE),--fake)
+	uv run python -m taxon.bench shop --condition $(CONDITION) --runs $(RUNS) $(if $(FAKE),--fake)
 
 # make search REQUEST='{"query": "red chef knife", "max_price": 50}'
 search:

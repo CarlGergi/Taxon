@@ -115,8 +115,13 @@ make tasks-review
 make tasks-check
 ```
 
-Tasks are drafted from hand labels and listing prices only. Each request is written by hand, in a
-shopper's words, and each task is hand-checked.
+Constraints and acceptable products come from hand labels and listing prices only. Each request,
+in a shopper's words, is drafted by `gpt-6-luna` from the requirements alone, never a product, and
+then read, edited where needed and approved by hand, along with the acceptable products. The drafter
+is not Claude, because the agent and the frontier-enriched catalog both are. Each task records
+whether its request was drafted and whether it was rewritten. A request that quotes a taxonomy path
+or a multi-word category name is held back until it is reworded. Drafting 100 requests costs about
+a cent; `FAKE=1` drafts plain stand-ins for free.
 
 ### Judging products outside the gold set
 
@@ -172,6 +177,35 @@ Every benchmark catalog holds the same 2,000 products: all 500 gold-queue produc
 distractors drawn with a fixed seed. Distractors never come from the products the model is trained
 on, so no condition shops listings Taxon has already seen with their labels.
 
+## Frontier enrichment
+
+The benchmark's middle condition is the same 2,000 listings enriched by `claude-sonnet-5-5` alone,
+with no fine-tuning. It goes through the same prompts as the labeling annotators (pick from the
+shortlist, or walk down the tree) and the same attribute pass, in the version that scored better
+on the hand labels, so the model is the only difference from the Taxon catalog. Its labels for the
+gold products double as the zero-shot baseline of the classifier ladder.
+
+```bash
+make enrich-price
+make enrich
+make search-index CATALOG=sonnet ENRICHMENTS=data/labeling/enrichments_sonnet.jsonl
+```
+
+The Taxon catalog comes from the trained model on this machine, in two passes like Sonnet's: the
+category alone, decoded through the token trie so it is always a real path, then that category's
+attributes, keeping only allowed values. It costs no API money; the report gives the local hours a
+million products would take, with the hardware.
+
+```bash
+make enrich-taxon RUN=qwen-lora-grpo
+make search-index CATALOG=taxon ENRICHMENTS=data/rl/qwen-lora-grpo/enrichments_taxon.jsonl
+```
+
+`make enrich-price` spends nothing: it counts the input tokens of a sample's real requests, image
+included, with Anthropic's free counting endpoint, and takes walking rates from the dry run.
+`make enrich` waits for the labeling run, its scoring on the gold set, and a price that fits what
+is left under the cap.
+
 ## Shopping agent
 
 One agent shops each catalog: `claude-haiku-5-5` with a fixed prompt, the `search_catalog` tool and
@@ -188,10 +222,23 @@ make shop CONDITION=raw
 ```
 
 `make shop-price` prices the runs from the real tool schema and the real size of search replies,
-spending nothing. `FAKE=1` runs a scripted model against the real engine. A real run reserves each
-call's worst-case cost against the Anthropic cap before sending it, logs every finished run with
-its transcript, and picks up where it stopped. The first round is 100 tasks, three catalogs and
-three runs each; all 300 tasks run only if the budget allows.
+spending nothing, and says how many runs per catalog the remaining Anthropic budget covers: three
+if they fit, otherwise two, never more than the cap. `FAKE=1` runs a scripted model against the
+real engine. A real run reserves each call's worst-case cost against the cap before sending it,
+logs every finished run with its transcript, and picks up where it stopped. Runs go one round at a
+time across the catalogs (`RUNS=1` on each, then `RUNS=2`), so a stop never leaves one catalog
+with more runs than another. The first round is 100 tasks; all 300 run only if budget remains.
+
+`make bench-score` turns the logged runs into the benchmark report: for each catalog, task success
+(the first product returned meets every requirement), precision of everything returned, empty
+answers, searches, model calls, tokens and dollars per task, each as a mean with its spread across
+runs, and the paired difference in success against the raw catalog with a 95% bootstrap interval
+over tasks. It also gives each catalog's enrichment cost per million products. It refuses while
+any catalog is missing runs or any returned product is unjudged or unresolved.
+
+Paid steps share the $20 Anthropic cap and run in order of importance: the labeling run, scoring
+it on the gold set, Sonnet's enrichment, then the agent runs, re-priced from what has actually been
+spent.
 
 ## Fine-tuning
 

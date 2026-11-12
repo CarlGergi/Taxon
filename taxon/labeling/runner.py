@@ -30,6 +30,11 @@ POLL_SECONDS = 30.0
 MAX_UNREACHABLE_POLLS = 120
 
 
+def price_factor(client: BatchClient) -> float:
+    """What a client's requests cost against batch prices: 1 for a batch, more sent one by one."""
+    return float(getattr(client, "price_factor", 1.0))
+
+
 def _request_bytes(request: LLMRequest) -> int:
     size = len(request.system) + len(request.user)
     if request.image_path is not None:
@@ -89,13 +94,15 @@ class BatchRunner:
         return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(self.journal.glob("*"))]
 
     def _submit(self, vendor: str, batch: list[LLMRequest], worst_case: float) -> dict:
-        batch_id = self.clients[vendor].submit(batch)
+        client = self.clients[vendor]
+        batch_id = client.submit(batch)
         # Written straight after submission, so a crash cannot lose a batch that is being paid for.
         entry = {
             "id": batch_id,
             "vendor": vendor,
             "config": vars(batch[0].config),
             "keys": [r.key for r in batch],
+            "price_factor": price_factor(client),
         }
         self.journal.mkdir(parents=True, exist_ok=True)
         path = self._journal_path(batch_id)
@@ -108,10 +115,11 @@ class BatchRunner:
     def _affordable(self, requests: list[LLMRequest]) -> tuple[list[LLMRequest], float]:
         vendor = requests[0].config.vendor
         remaining = self.budget.remaining(vendor)
+        factor = price_factor(self.clients[vendor])
         taken: list[LLMRequest] = []
         total = 0.0
         for request in requests:
-            cost = worst_case_cost(request)
+            cost = worst_case_cost(request) * factor
             if total + cost > remaining:
                 break
             taken.append(request)
@@ -126,7 +134,7 @@ class BatchRunner:
         results = {}
         for key in entry["keys"]:
             result = got.get(key) or LLMResult(key, Status.FAILED, error="missing from batch")
-            result.cost = cost_of(result.usage, config)
+            result.cost = cost_of(result.usage, config) * entry.get("price_factor", 1.0)
             total += result.cost
             self.cache.put(result)
             results[key] = result

@@ -49,7 +49,8 @@ class AttributeExtractor:
         self.image_for = image_for
         self.shortlister = ValueShortlister(taxonomy)
 
-    def _request(self, mode: str, product: dict, path: str):
+    def request_for(self, mode: str, product: dict, path: str):
+        """The attribute request for `product` in `path`, and the shortlisted values if any."""
         image = self.image_for(product)
         if mode == EXACT:
             handles = sorted(self.taxonomy.allowed_values(path))
@@ -71,7 +72,7 @@ class AttributeExtractor:
                 runs[mode] = {"status": "no_attributes", "attributes": {}}
                 continue
             product = by_asin[row["parent_asin"]]
-            requests[row["parent_asin"]] = self._request(mode, product, row["path"])
+            requests[row["parent_asin"]] = self.request_for(mode, product, row["path"])
         results = self.runner.run(request for request, _ in requests.values())
         for row in rows:
             if row["parent_asin"] not in requests:

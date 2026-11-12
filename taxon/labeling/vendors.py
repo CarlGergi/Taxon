@@ -11,6 +11,7 @@ import hashlib
 import json
 import tempfile
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import anthropic
@@ -199,6 +200,55 @@ class OpenAIBatchClient:
         return LLMResult(key, status, message.get("content") or "", usage)
 
 
+class OpenAIDirectClient:
+    """Sends each request at once through Chat Completions, for when a batch has stalled.
+
+    It costs twice the batch price. It still polls and reads batches the batch client started, so
+    a run can collect a cancelled batch and resend what it never answered.
+    """
+
+    price_factor = 2.0
+    _PREFIX = "direct-"
+
+    def __init__(self, api_key: str, base_url: str = OPENAI_URL, workers: int = 8):
+        self.batches = OpenAIBatchClient(api_key, base_url)
+        self.client = self.batches.client
+        self.workers = workers
+        self._done: dict[str, list[LLMResult]] = {}
+
+    def _one(self, request: LLMRequest) -> LLMResult:
+        try:
+            response = self.client.chat.completions.create(**OpenAIBatchClient.body(request))
+        except openai.APIStatusError as error:
+            return LLMResult(request.key, Status.FAILED, error=f"status {error.status_code}")
+        except openai.APIConnectionError:
+            return LLMResult(request.key, Status.FAILED, error="connection failed")
+        row = {
+            "custom_id": request.key,
+            "response": {"status_code": 200, "body": response.model_dump()},
+        }
+        return OpenAIBatchClient._result(row)
+
+    def submit(self, requests: list[LLMRequest]) -> str:
+        with ThreadPoolExecutor(self.workers) as pool:
+            results = list(pool.map(self._one, requests))
+        keys = "|".join(r.key for r in requests)
+        batch_id = self._PREFIX + hashlib.sha256(keys.encode()).hexdigest()[:24]
+        self._done[batch_id] = results
+        return batch_id
+
+    def poll(self, batch_id: str) -> bool:
+        if batch_id.startswith(self._PREFIX):
+            # Answers are in memory; after a crash they are gone, and the runner resends them.
+            return True
+        return self.batches.poll(batch_id)
+
+    def results(self, batch_id: str) -> list[LLMResult]:
+        if batch_id.startswith(self._PREFIX):
+            return self._done.pop(batch_id, [])
+        return self.batches.results(batch_id)
+
+
 class GoogleBatchClient:
     def __init__(self, api_key: str, base_url: str = GOOGLE_URL, charge: Charge | None = None):
         self.client = genai.Client(
@@ -301,14 +351,37 @@ class GoogleBatchClient:
         return LLMResult(key, Status.OK, text, usage)
 
 
-def build_clients(secrets: Secrets, vendors: Iterable[str], charge: Charge | None = None) -> dict:
+def anthropic_token_counter(api_key: str, base_url: str = ANTHROPIC_URL) -> Callable:
+    """Counts a request's input tokens, image and reply schema included, with Anthropic's free
+    counting endpoint, from exactly the parameters a batch would send."""
+    client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
+
+    def count(request: LLMRequest) -> int:
+        params = AnthropicBatchClient.params(request)
+        sent = {k: params[k] for k in ("model", "system", "messages", "output_config")}
+        return client.messages.count_tokens(**sent).input_tokens
+
+    return count
+
+
+def build_clients(
+    secrets: Secrets,
+    vendors: Iterable[str],
+    charge: Charge | None = None,
+    direct: Iterable[str] = (),
+) -> dict:
     """The real clients for the vendors in use. Raises MissingKey, naming the key, if one is unset.
 
-    Only the named vendors' keys are needed, so an unused vendor needs no key.
+    Only the named vendors' keys are needed, so an unused vendor needs no key. A vendor in `direct`
+    is sent request by request at full price instead of in batches; only OpenAI supports it.
     """
+    direct = set(direct)
+    if direct - {"openai"}:
+        raise ValueError(f"no direct client for {sorted(direct - {'openai'})}")
+    openai_client = OpenAIDirectClient if "openai" in direct else OpenAIBatchClient
     makers = {
         "anthropic": lambda: AnthropicBatchClient(secrets.require("ANTHROPIC_API_KEY")),
-        "openai": lambda: OpenAIBatchClient(secrets.require("OPENAI_API_KEY")),
+        "openai": lambda: openai_client(secrets.require("OPENAI_API_KEY")),
         "google": lambda: GoogleBatchClient(secrets.require("GEMINI_API_KEY"), charge=charge),
     }
     return {vendor: makers[vendor]() for vendor in vendors}

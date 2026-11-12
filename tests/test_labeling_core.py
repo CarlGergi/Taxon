@@ -274,6 +274,52 @@ def test_polling_gives_up_after_an_hour_unreachable_and_a_rerun_collects(world, 
     assert clients["anthropic"].requests_sent == 1
 
 
+def test_a_client_sent_request_by_request_is_charged_its_price_factor(tmp_path):
+    class Direct(FakeBatchClient):
+        price_factor = 2.0
+
+    def build(client):
+        return BatchRunner(
+            {"anthropic": client},
+            ResponseCache(tmp_path / client.__class__.__name__),
+            Budget(tmp_path / f"{client.__class__.__name__}.jsonl", {"anthropic": 5.0}),
+            tmp_path / f"j{client.__class__.__name__}",
+            sleep=lambda _: None,
+        )
+
+    def respond(r):
+        return LLMResult(
+            r.key, Status.OK, '{"choice": 1}', Usage(input_tokens=1000, output_tokens=10)
+        )
+
+    r = request()
+    batch, direct = (
+        build(FakeBatchClient("anthropic", respond)),
+        build(Direct("anthropic", respond)),
+    )
+    plain = batch.run([r])[r.key].cost
+    doubled = direct.run([r])[r.key].cost
+    assert doubled == pytest.approx(2 * plain)
+    assert direct.budget.spent("anthropic") == pytest.approx(doubled)
+
+
+def test_the_worst_case_reserved_for_a_direct_client_is_scaled_too(tmp_path):
+    class Direct(FakeBatchClient):
+        price_factor = 2.0
+
+    r = request("x" * 1_000)
+    cap = worst_case_cost(r) * 1.5
+    runner = BatchRunner(
+        {"anthropic": Direct("anthropic", lambda q: answer(q, 1))},
+        ResponseCache(tmp_path / "c"),
+        Budget(tmp_path / "l", {"anthropic": cap}),
+        tmp_path / "j",
+        sleep=lambda _: None,
+    )
+    with pytest.raises(BudgetExceeded):
+        runner.run([r])
+
+
 def test_stops_before_a_cap_would_be_passed(world):
     r = request("x" * 1_000)
     runner, clients = world(caps={"anthropic": worst_case_cost(r) / 2})

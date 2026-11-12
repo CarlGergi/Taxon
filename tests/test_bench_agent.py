@@ -414,3 +414,17 @@ def test_pricing_the_agent_reads_the_real_engine_and_spends_nothing(
     assert report["plans"]["100"]["agent_runs"] == 900
     assert report["anthropic_spent"] == 0.0
     assert not ledger.exists()
+
+
+def test_three_runs_when_they_fit_two_when_only_two_do_and_none_below_that():
+    assert agent.runs_that_fit(1.0, 3.0, 3) == 3
+    assert agent.runs_that_fit(1.0, 2.9, 3) == 2
+    assert agent.runs_that_fit(1.0, 1.9, 3) == 0
+
+
+def test_a_plan_says_how_many_runs_the_remaining_budget_covers():
+    roomy = price_plan(FAKE_TOOL, 900.0, (100,), 3, 3, spent=0.0, cap=20.0)
+    assert roomy["plans"]["100"]["runs_that_fit"] == 3
+    per_round = roomy["plans"]["100"]["expected"] / 3
+    tight = price_plan(FAKE_TOOL, 900.0, (100,), 3, 3, spent=20.0 - 2.5 * per_round, cap=20.0)
+    assert tight["plans"]["100"]["runs_that_fit"] == 2

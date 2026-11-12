@@ -262,7 +262,7 @@ def test_growing_the_set_keeps_written_tasks_untouched():
 
 def test_review_narrows_approves_and_saves_progress():
     tasks = [task(checked=False)]
-    answers = iter(["y", "n"])
+    answers = iter(["", "y", "n"])
     assert review(tasks, {"G1": "Tote"}, lambda _: next(answers), lambda _: None) == 1
     assert tasks[0].acceptable == ["G1"]
     assert tasks[0].checked is True
@@ -274,11 +274,12 @@ def test_review_can_stop_part_way():
     assert tasks[0].checked is False
 
 
-def test_review_skips_blank_requests_and_rejecting_all_leaves_it_unchecked():
+def test_review_leaves_a_blank_request_unchecked_and_rejecting_all_too():
     blank = task(request="", checked=False)
     rejected = task(checked=False)
-    assert review([blank, rejected], {}, lambda _: "n", lambda _: None) == 0
-    assert rejected.checked is False
+    answers = iter(["", "", "n", "n", "n"])
+    assert review([blank, rejected], {}, lambda _: next(answers), lambda _: None) == 0
+    assert blank.checked is False and rejected.checked is False
 
 
 def test_describe_reads_plainly():
@@ -313,7 +314,24 @@ def workspace(tmp_path, monkeypatch, taxonomy):
             for i in range(12)
         ],
     )
+    monkeypatch.setattr(cli, "drafting_runner", lambda fake: fake_drafting_runner(tmp_path))
     return {"tasks_path": tmp_path / "tasks.jsonl", "labels_path": labels, "derived": derived}
+
+
+def fake_drafting_runner(root):
+    from taxon.bench.drafting import fake_request
+    from taxon.labeling.budget import Budget
+    from taxon.labeling.cache import ResponseCache
+    from taxon.labeling.fakes import FakeBatchClient
+    from taxon.labeling.runner import BatchRunner
+
+    return BatchRunner(
+        {"openai": FakeBatchClient("openai", fake_request)},
+        ResponseCache(root / "cache"),
+        Budget(root / "ledger.jsonl", {"openai": 1.0}),
+        root / "open",
+        sleep=lambda _: None,
+    )
 
 
 def test_draft_then_check_from_the_command_line(workspace, capsys):
@@ -328,6 +346,20 @@ def test_draft_then_check_from_the_command_line(workspace, capsys):
     save_tasks(workspace["tasks_path"], tasks)
     assert cli.main(["check", "--need", str(len(tasks))], **workspace) == 0
     assert json.loads(capsys.readouterr().out)["tasks"] == len(tasks)
+
+
+def test_drafting_tasks_also_drafts_their_requests(workspace, capsys):
+    assert cli.main(["draft", "--n", "3"], **workspace) == 0
+    out = capsys.readouterr().out
+    assert "tasks-review" in out
+    tasks = load_tasks(workspace["tasks_path"])
+    assert all(t.request and t.drafted_by == "gpt-6-luna" for t in tasks)
+    assert not any(t.checked for t in tasks)
+
+
+def test_requests_can_be_left_blank(workspace):
+    assert cli.main(["draft", "--n", "3", "--no-requests"], **workspace) == 0
+    assert all(t.request == "" for t in load_tasks(workspace["tasks_path"]))
 
 
 def test_drafting_again_keeps_hand_written_requests(workspace):
