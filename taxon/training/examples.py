@@ -33,6 +33,15 @@ Reply only with a JSON object holding exactly the requested fields, and no other
 - Any other field: the product's value for that attribute, or null if it does not apply.
 """
 
+# With a shortlist, the category is picked from candidate paths instead of written from memory.
+_WRITTEN = "- category: the product's full path in Shopify's product taxonomy"
+_PICKED = '- category: one path copied exactly from the candidates, or "none" if no candidate fits.'
+SHORTLIST_SYSTEM = "\n".join(
+    _PICKED if line.startswith(_WRITTEN) else line for line in SYSTEM.split("\n")
+)
+NONE = "none"
+SHORTLISTS = DERIVED_DIR / "shortlists.jsonl"
+
 ImageFor = Callable[[Mapping], str | None]
 
 
@@ -102,27 +111,55 @@ def field_vocabulary(items: Sequence[LabeledProduct]) -> list[str]:
     return sorted({name for item in items for name in item.attributes})
 
 
-def messages_for(product: Mapping, requested: Sequence[str], has_image: bool) -> list[dict]:
-    text = f"{product_block(product)}\n\nFields: {', '.join(requested)}"
+def load_shortlists(path: Path = SHORTLISTS) -> dict[str, list[str]]:
+    """The candidate paths retrieval ranks for each product, as the annotators saw them."""
+    return {row["parent_asin"]: row["shortlist"] for row in read_jsonl(path)}
+
+
+def messages_for(
+    product: Mapping,
+    requested: Sequence[str],
+    has_image: bool,
+    candidates: Sequence[str] | None = None,
+) -> list[dict]:
+    """The request. With candidates, they are listed in ranked order, one per line."""
+    text = product_block(product)
+    if candidates is not None:
+        text += "\n\nCandidates:\n" + "\n".join(candidates)
+    text += f"\n\nFields: {', '.join(requested)}"
     content: list[dict] = [{"type": "image"}] if has_image else []
     content.append({"type": "text", "text": text})
+    system = SYSTEM if candidates is None else SHORTLIST_SYSTEM
     return [
-        {"role": "system", "content": [{"type": "text", "text": SYSTEM}]},
+        {"role": "system", "content": [{"type": "text", "text": system}]},
         {"role": "user", "content": content},
     ]
 
 
+def shortlist_answer(category: str, candidates: Sequence[str]) -> str:
+    """The right pick: the labeled path when it is a candidate, else "none"."""
+    return category if category in candidates else NONE
+
+
 def request_row(
-    item: LabeledProduct, requested: Sequence[str], image_for: ImageFor, schema: str = "sampled"
+    item: LabeledProduct,
+    requested: Sequence[str],
+    image_for: ImageFor,
+    schema: str = "sampled",
+    candidates: Sequence[str] | None = None,
 ) -> dict:
     image_path = image_for(item.product)
+    values = item.values
+    if candidates is not None:
+        values = {**values, CATEGORY: shortlist_answer(item.category, candidates)}
     return {
         "asin": item.asin,
         "requested": list(requested),
         "schema": schema,
-        "messages": messages_for(item.product, requested, image_path is not None),
+        "messages": messages_for(item.product, requested, image_path is not None, candidates),
         "image_path": image_path,
-        "target": target_text(requested, item.values),
+        "candidates": list(candidates) if candidates is not None else None,
+        "target": target_text(requested, values),
     }
 
 
@@ -132,8 +169,12 @@ def training_examples(
     seed: int,
     image_for: ImageFor,
     variants: int = 1,
+    shortlists: Mapping[str, Sequence[str]] | None = None,
 ) -> list[dict]:
-    """One example per product per variant, each with its own seeded choice of fields."""
+    """One example per product per variant, each with its own seeded choice of fields.
+
+    With shortlists, every example asks for the category, picked from the product's candidates.
+    """
     vocabulary = field_vocabulary(items)
     rows = []
     for variant in range(variants):
@@ -144,5 +185,9 @@ def training_examples(
                 allowed = taxonomy.allowed_values(item.category)
                 extra = inapplicable_field(vocabulary, allowed, requested, rng)
                 requested = ordered([*requested, extra]) if extra else requested
-            rows.append(request_row(item, requested, image_for))
+            candidates = None
+            if shortlists is not None:
+                candidates = shortlists[item.asin]
+                requested = ordered([CATEGORY, *requested])
+            rows.append(request_row(item, requested, image_for, candidates=candidates))
     return rows

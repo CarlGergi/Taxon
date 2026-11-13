@@ -184,8 +184,10 @@ def test_select_removes_ids_shared_across_domains():
 
 def test_select_removes_near_identical_titles():
     records = [normalize_record(raw(f"A{i}", title="Blue-Mug!"), "a") for i in range(3)]
-    other = [normalize_record(raw("Z", title="blue mug"), "a"),
-             normalize_record(raw("Y", title="Red Mug"), "a")]
+    other = [
+        normalize_record(raw("Z", title="blue mug"), "a"),
+        normalize_record(raw("Y", title="Red Mug"), "a"),
+    ]
     chosen = select({"a": records + other}, 2, SEED)
     assert {normalized_title(r["title"]) for r in chosen} == {"blue mug", "red mug"}
 

@@ -434,3 +434,34 @@ def test_replies_end_at_the_end_of_the_chat_turn(processor):
     end_of_turn = processor.tokenizer.convert_tokens_to_ids("<|im_end|>")
     assert end_of_turn in model.generation_config.eos_token_id
     assert model.config.get_text_config().eos_token_id == end_of_turn
+
+
+# Picking from a shortlist
+
+
+def test_with_shortlists_every_evaluation_request_lists_candidates_and_asks_for_the_category():
+    requests = evaluation_requests([ITEM], no_image, {"A": [TOTES, "Home"]})
+    assert [r["requested"] for r in requests if r["schema"] == ALONE] == [
+        [CATEGORY],
+        [CATEGORY, "color"],
+    ]
+    assert all(r["candidates"] == [TOTES, "Home"] for r in requests)
+
+
+def test_a_none_pick_scores_as_no_answer():
+    rows = [{"product": "A", "schema": FULL, "output": json.dumps({CATEGORY: "none"})}]
+    scores = gold_scores(rows, {"A": {"path": TOTES, "attributes": {}}}, [TOTES])
+    assert scores["category_predictions"] == {"A": None}
+
+
+def test_a_shortlist_run_is_trained_and_evaluated_with_its_candidates(world, capsys):
+    root, _ = world
+    write_jsonl(
+        root / "shortlists.jsonl",
+        [{"parent_asin": f"P{i:03}", "shortlist": [TOTES, "Home", "Apparel"]} for i in range(200)],
+    )
+    assert run_cli(world, "train", "--products", "2", "--max-steps", "1", "--shortlist", "2") == 0
+    record = json.loads((root / "runs" / "tiny" / "run.json").read_text())
+    assert record["shortlist"] == 2
+    assert run_cli(world, "evaluate", "--products", "1") == 0
+    assert "compliance_rate" in capsys.readouterr().out

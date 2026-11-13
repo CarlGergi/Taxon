@@ -205,3 +205,53 @@ def test_the_command_enriches_the_catalog_with_a_trained_run(world, capsys, monk
 def test_enriching_needs_a_trained_run(world, capsys):  # noqa: F811
     assert run_cli(world, "enrich", "--name", "nope") == cli.EXIT_REFUSED
     assert "no run named nope" in capsys.readouterr().out
+
+
+# Picking from a shortlist
+
+
+def test_with_candidates_both_requests_list_them_and_the_second_also_asks_for_the_category(
+    taxonomy,
+):
+    allowed = taxonomy.allowed_values(TOTES)
+    handle = sorted(allowed)[0]
+    value = sorted(allowed[handle])[0]
+    second = json.dumps({"category": "Home", handle: value})
+    generate, calls = scripted(json.dumps({"category": TOTES}), second)
+    row = enrich_product(product(), taxonomy, generate, no_image, candidates=[TOTES, "Home"])
+    assert row["path"] == TOTES and row["attributes"] == {handle: value}
+    assert all(call[0]["candidates"] == [TOTES, "Home"] for call in calls)
+    assert calls[1][0]["requested"] == ["category", *sorted(allowed)]
+
+
+def test_a_none_pick_means_no_category(taxonomy):
+    generate, calls = scripted(json.dumps({"category": "none"}))
+    row = enrich_product(product(), taxonomy, generate, no_image, candidates=[TOTES])
+    assert (row["path"], row["status"]) == (None, "no_category")
+
+
+def test_a_run_inherits_its_shortlist_from_the_run_it_started_from(tmp_path):
+    from taxon.rl.enrich import run_shortlist
+
+    sft = tmp_path / "sft"
+    sft.mkdir()
+    (sft / "run.json").write_text(json.dumps({"shortlist": 50}))
+    assert run_shortlist({"shortlist": 30}) == 30
+    assert run_shortlist({"fine_tuned_from": str(sft)}) == 50
+    assert run_shortlist({"fine_tuned_from": None}) == 0
+    assert run_shortlist({}) == 0
+
+
+def test_a_constrained_shortlist_reply_is_one_of_its_candidates_or_none(taxonomy):
+    from taxon.rl.decoding import TrieGuide, _closers, shortlist_trie
+
+    processor = tiny_processor()
+    tokenizer = processor.tokenizer
+    trie = shortlist_trie(tokenizer, (TOTES, "Home"))
+    opening = tokenizer.encode('{"category": "', add_special_tokens=False)
+    guide = TrieGuide(opening, trie, _closers(tokenizer))
+    for token in opening:
+        guide.advance(token)
+    starts = {tokenizer.decode([t]) for t in guide.allowed()}
+    assert any("n" in s for s in starts) and any("A" in s for s in starts)
+    assert not any(s.startswith("K") for s in starts)

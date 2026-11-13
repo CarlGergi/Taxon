@@ -19,7 +19,7 @@ from taxon.gold.pool import assert_disjoint
 from taxon.hardware import hardware
 from taxon.products import seeded_hash
 from taxon.training.collate import load_images, prompt_text
-from taxon.training.examples import ImageFor, LabeledProduct, request_row
+from taxon.training.examples import NONE, ImageFor, LabeledProduct, request_row
 from taxon.training.fields import CATEGORY, ordered
 from taxon.training.train import ADAPTER_DIR, RUN_FILE, TRAIN_IDS_FILE, base_model, run_device
 
@@ -31,18 +31,27 @@ _DISTRACTORS = ("color", "material", "size", "pattern")
 Generate = Callable[[Sequence[Mapping]], list[str]]
 
 
-def evaluation_requests(items: Sequence[LabeledProduct], image_for: ImageFor) -> list[dict]:
+def evaluation_requests(
+    items: Sequence[LabeledProduct],
+    image_for: ImageFor,
+    shortlists: Mapping[str, Sequence[str]] | None = None,
+) -> list[dict]:
     """Each field asked alone, then everything at once plus one field the product does not state.
 
-    So every field is asked under at least two schemas, which is what invariance compares.
+    So every field is asked under at least two schemas, which is what invariance compares. With
+    shortlists, every request lists the product's candidates and also asks for the category, as
+    every shortlist training example did.
     """
     rows = []
     for item in items:
         fields = ordered(item.values)
         options = [name for name in _DISTRACTORS if name not in fields]
         extra = sorted(options, key=lambda name: seeded_hash(0, f"{item.asin}|{name}"))[:1]
-        rows.extend(request_row(item, [name], image_for, ALONE) for name in fields)
-        rows.append(request_row(item, ordered([*fields, *extra]), image_for, FULL))
+        candidates = shortlists[item.asin] if shortlists is not None else None
+        for name in fields:
+            alone = [name] if candidates is None else ordered([CATEGORY, name])
+            rows.append(request_row(item, alone, image_for, ALONE, candidates))
+        rows.append(request_row(item, ordered([*fields, *extra]), image_for, FULL, candidates))
     return rows
 
 
@@ -67,6 +76,7 @@ def gold_scores(
     asins = sorted(set(replies) & set(hand_labels))
     parsed = [parse_fields(replies[asin]["output"]) or {} for asin in asins]
     predictions = [fields.get(CATEGORY) for fields in parsed]
+    predictions = [None if p == NONE else p for p in predictions]
     return {
         "hand_labeled": len(asins),
         # Kept per product, so two runs can be compared on the same products (paired_difference).
@@ -132,12 +142,13 @@ def evaluate_run(
     on: str,
     hand_labels: Mapping[str, Mapping] | None = None,
     valid_paths: Sequence[str] = (),
+    shortlists: Mapping[str, Sequence[str]] | None = None,
 ) -> dict:
     """Write a report next to the run. Accuracy appears only when hand labels are passed in."""
     if hand_labels is not None:
         train_ids = json.loads((run_dir / TRAIN_IDS_FILE).read_text(encoding="utf-8"))
         assert_disjoint(train_ids, hand_labels)
-    rows = run_requests(evaluation_requests(items, image_for), generate)
+    rows = run_requests(evaluation_requests(items, image_for, shortlists), generate)
     report = {
         "run": record["name"],
         "model": record["model"],

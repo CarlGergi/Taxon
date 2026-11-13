@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from eval.fields import parse_fields
 from taxon.taxonomy import Taxonomy, split_path
+from taxon.training.examples import NONE
 from taxon.training.fields import CATEGORY
 
 DEPTH_PENALTY = 0.5
@@ -91,7 +92,7 @@ def allowed_values(text: str, requested: Sequence[str], taxonomy: Taxonomy, path
     fields = parse_fields(text) or {}
     predicted = predicted_category(text)
     category = predicted if predicted in taxonomy else path
-    allowed = taxonomy.allowed_values(category)
+    allowed = taxonomy.allowed_values(category) if category in taxonomy else {}
     given = [
         (name, value)
         for name, value in fields.items()
@@ -108,6 +109,16 @@ def score(
     """Every reward for one reply. Category rewards apply only when category was requested."""
     asked_category = CATEGORY in requested
     predicted = predicted_category(text) if asked_category else None
+    if asked_category and gold[CATEGORY] == NONE:
+        # A shortlist without the labeled path: "none" is the right pick, and any path is wrong.
+        right = float(predicted == NONE)
+        return {
+            "compliance": field_compliance(text, requested),
+            "valid_node": right or float(predicted in taxonomy),
+            "path_match": right,
+            "allowed_values": allowed_values(text, requested, taxonomy, ""),
+            "depth_penalty": 0.0,
+        }
     valid = predicted in taxonomy
     return {
         "compliance": field_compliance(text, requested),

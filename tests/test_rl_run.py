@@ -385,3 +385,75 @@ def test_image_markers_sit_on_the_image_tokens_in_grpo(processor, taxonomy, tmp_
     run_grpo(rows, processor, taxonomy, two_prompts_a_step, SILVER, tmp_path / "run", gold)
     assert checked
 
+
+# Checkpoints
+
+
+def test_checkpoints_are_saved_every_fifty_steps_by_default(tmp_path):
+    args = grpo_arguments(GrpoSettings(), tmp_path, RewardWeights())
+    assert (args.save_strategy, args.save_steps) == ("steps", 50)
+    assert args.save_total_limit == grpo.CHECKPOINTS_KEPT
+    assert (
+        grpo_arguments(GrpoSettings(save_steps=0), tmp_path, RewardWeights()).save_strategy == "no"
+    )
+
+
+def test_the_latest_checkpoint_is_the_highest_step(tmp_path):
+    assert grpo.latest_checkpoint(tmp_path) is None
+    for name in ("checkpoint-50", "checkpoint-100", "checkpoint-9", "checkpoint-x"):
+        (tmp_path / name).mkdir()
+    assert grpo.latest_checkpoint(tmp_path).name == "checkpoint-100"
+
+
+def test_a_stopped_run_resumes_from_its_checkpoint(processor, taxonomy, tmp_path):
+    from dataclasses import replace
+
+    first = replace(FAST, max_steps=1, save_steps=1)
+    run_grpo(rl_rows(taxonomy), processor, taxonomy, first, SILVER, tmp_path, GOLD)
+    assert grpo.latest_checkpoint(tmp_path).name == "checkpoint-1"
+    record = run_grpo(
+        rl_rows(taxonomy),
+        processor,
+        taxonomy,
+        replace(first, max_steps=2),
+        SILVER,
+        tmp_path,
+        GOLD,
+        resume=True,
+    )
+    assert record["resumed_from"] == "checkpoint-1"
+    assert len(record["losses"]) == 2
+
+
+# One pick on a shortlist
+
+
+def test_the_pick_length_covers_the_longest_candidate_and_the_end_token(processor):
+    rows = [{"candidates": [TOTES, "Home"]}, {"candidates": ["Apparel"]}]
+    tokens = processor.tokenizer.encode(json.dumps({"category": TOTES}), add_special_tokens=False)
+    assert grpo.pick_length(processor.tokenizer, rows) == len(tokens) + 1
+
+
+def test_grpo_on_a_shortlist_run_asks_for_one_pick_at_the_pick_length(world, monkeypatch):
+    root, _ = world
+    sft = root / "sft" / "picker"
+    sft.mkdir(parents=True)
+    (sft / "run.json").write_text(json.dumps({"shortlist": 2}))
+    write_jsonl(
+        root / "shortlists.jsonl",
+        [{"parent_asin": f"P{i:03}", "shortlist": [TOTES, "Home", "Apparel"]} for i in range(200)],
+    )
+    seen = {}
+
+    def fake_run(rows, processor, taxonomy, settings, *args, **kwargs):
+        seen.update(rows=rows, settings=settings, tokenizer=processor.tokenizer)
+        return {"model": "fake", "label_source": "silver", "prompts": len(rows)}
+
+    monkeypatch.setattr(grpo, "run_grpo", fake_run)
+    argv = ["train", "--products", "3", "--from", "picker", "--sft-runs", str(root / "sft")]
+    assert run_cli(world, *argv) == 0
+    assert {tuple(r["requested"]) for r in seen["rows"]} == {("category",)}
+    assert all(r["candidates"] == [TOTES, "Home"] for r in seen["rows"])
+    expected = grpo.pick_length(seen["tokenizer"], seen["rows"])
+    assert seen["settings"].max_completion_length == expected < 128
+    assert seen["settings"].shortlist == 2

@@ -21,13 +21,15 @@ from statistics import mean, median, quantiles
 from eval.metrics import BOOTSTRAP, bootstrap_interval, evaluate, paired_difference
 from taxon.hardware import hardware
 from taxon.pins import DATA_DIR, DERIVED_DIR, TAXONOMY
-from taxon.rl.decoding import TrieGuide, category_trie, category_value, trie_guide
-from taxon.rl.enrich import CATEGORY_TOKENS, inference_row
+from taxon.rl.decoding import TrieGuide, category_trie, shortlist_trie, trie_guide
+from taxon.rl.enrich import CATEGORY_TOKENS, inference_row, picked_category, run_shortlist
 from taxon.taxonomy import Taxonomy
 from taxon.training.cli import IMAGES_DIR
 
 QUANT_DIR = DATA_DIR / "quant"
 MERGED = "merged"
+# Which run was converted, and whether it picks its category from a shortlist.
+SOURCE_FILE = "source.json"
 # Name, and bits per weight (None keeps bfloat16).
 PRECISIONS = {"bf16": None, "int8": 8, "int4": 4}
 GROUP_SIZE = 64
@@ -131,7 +133,7 @@ def measure_rows(
     golds: Sequence[str],
     prompt_for: Callable[[Mapping], str],
     generate: Generate,
-    new_guide: Callable[[], TrieGuide],
+    new_guide: Callable[[Mapping], TrieGuide],
     valid_paths: Sequence[str],
     clock: Callable[[], float] = time.perf_counter,
     warmup: int = 1,
@@ -142,14 +144,14 @@ def measure_rows(
     counted as latency.
     """
     for row in rows[:warmup]:
-        generate(prompt_for(row), row["image_path"], new_guide())
+        generate(prompt_for(row), row["image_path"], new_guide(row))
     predictions, latencies = [], []
     for row in rows:
         prompt = prompt_for(row)
         start = clock()
-        text = generate(prompt, row["image_path"], new_guide())
+        text = generate(prompt, row["image_path"], new_guide(row))
         latencies.append(clock() - start)
-        predictions.append(category_value(text))
+        predictions.append(picked_category(text))
     return {
         "accuracy": evaluate(
             list(golds), predictions, valid_paths=valid_paths, bootstrap=BOOTSTRAP
@@ -200,7 +202,7 @@ def measure_precision(path: Path, rows, golds, taxonomy: Taxonomy) -> dict:
         golds,
         lambda row: prompt_text(processor, row["messages"]),
         reply,
-        lambda: trie_guide(processor.tokenizer, trie),
+        lambda row: trie_guide(processor.tokenizer, row_trie(processor.tokenizer, trie, row)),
         taxonomy.paths(),
     )
     report["size_gb"] = _size_gb(path)
@@ -208,12 +210,21 @@ def measure_precision(path: Path, rows, golds, taxonomy: Taxonomy) -> dict:
     return report
 
 
-def gold_rows(taxonomy: Taxonomy, images: Path | None, limit: int):
-    """The hand-labeled products, each asked for its category alone."""
+def row_trie(tokenizer, trie, row: Mapping):
+    """The whole taxonomy's trie, or the row's own candidates and "none" when it has a shortlist."""
+    if row.get("candidates") is not None:
+        return shortlist_trie(tokenizer, tuple(row["candidates"]))
+    return trie
+
+
+def gold_rows(taxonomy: Taxonomy, images: Path | None, limit: int, shortlist: int = 0):
+    """The hand-labeled products, each asked for its category alone, from its candidates when the
+    run was trained with a shortlist."""
     from taxon.gold.server import LABELS_PATH
     from taxon.gold.store import GoldStore
     from taxon.products import read_jsonl
     from taxon.training.cli import image_lookup
+    from taxon.training.examples import load_shortlists
 
     products = {p["parent_asin"]: p for p in read_jsonl(DERIVED_DIR / "products.jsonl")}
     queue = [row["parent_asin"] for row in read_jsonl(DERIVED_DIR / "gold_queue.jsonl")]
@@ -221,7 +232,13 @@ def gold_rows(taxonomy: Taxonomy, images: Path | None, limit: int):
     asins = sorted(labels)[:limit] if limit else sorted(labels)
     chosen = [products[a] for a in asins]
     image_for = image_lookup(chosen, images)
-    rows = [inference_row(p, ["category"], image_for) for p in chosen]
+    ranked = load_shortlists() if shortlist else {}
+    rows = [
+        inference_row(
+            p, ["category"], image_for, ranked[p["parent_asin"]][:shortlist] if shortlist else None
+        )
+        for p in chosen
+    ]
     return rows, [labels[a]["path"] for a in asins]
 
 
@@ -238,6 +255,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "prepare":
         merged = merge_run(args.run, QUANT_DIR / MERGED)
         paths = convert_all(merged, QUANT_DIR)
+        record = json.loads((args.run / "run.json").read_text(encoding="utf-8"))
+        source = {"run": str(args.run), "shortlist": run_shortlist(record)}
+        (QUANT_DIR / SOURCE_FILE).write_text(json.dumps(source, indent=2), encoding="utf-8")
         print(json.dumps({name: str(p) for name, p in paths.items()}, indent=2))
         return 0
 
@@ -245,7 +265,8 @@ def main(argv: list[str] | None = None) -> int:
     from taxon.reproduce import write_result
 
     taxonomy = Taxonomy.load(fetch(TAXONOMY))
-    rows, golds = gold_rows(taxonomy, args.images, args.limit)
+    source = json.loads((QUANT_DIR / SOURCE_FILE).read_text(encoding="utf-8"))
+    rows, golds = gold_rows(taxonomy, args.images, args.limit, source["shortlist"])
     if not rows:
         print("No hand labels yet, so there is nothing to measure against.")
         return 1
@@ -254,7 +275,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     report = {
         "hardware": hardware("mps"),
-        "decoding": "greedy, category alone, trie-constrained",
+        "run": source["run"],
+        "decoding": "greedy, category alone, trie-constrained"
+        + (f", picked from {source['shortlist']} candidates" if source["shortlist"] else ""),
         "group_size": GROUP_SIZE,
         "fp8": "not measured: it needs an NVIDIA GPU",
         "precisions": precisions,

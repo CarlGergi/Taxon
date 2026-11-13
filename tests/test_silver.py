@@ -202,4 +202,3 @@ def test_stated_attributes_skip_attributes_the_category_does_not_have(taxonomy):
 def test_stated_attributes_match_a_handle_written_with_spaces(taxonomy):
     found = stated_attributes({"Strap Color": "Blue"}, "Apparel > Bags", taxonomy)
     assert found == {"strap-color": "Blue"}
-

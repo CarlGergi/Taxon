@@ -98,7 +98,7 @@ def test_measuring_scores_each_level_and_skips_the_warm_up_in_timing():
         ["Home > Kitchen", "Apparel > Bags"],
         lambda row: row["id"],
         generate,
-        guide,
+        lambda row: guide(),
         PATHS,
         clock=lambda: next(ticks),
     )
@@ -129,3 +129,19 @@ def test_the_mlx_processor_masks_all_but_allowed_tokens_and_tracks_the_reply():
     free = quant.MlxTrie(guide())
     free.guide.phase = "free"
     assert free(mx.array([1]), logits) is logits
+
+
+def test_a_shortlist_row_gets_its_own_trie_and_none_counts_as_no_answer():
+    whole = object()
+    assert quant.row_trie(None, whole, {"candidates": None}) is whole
+    rows = [{"id": "a", "image_path": None}]
+    report = quant.measure_rows(
+        rows,
+        ["Apparel"],
+        lambda r: r["id"],
+        lambda *a: '{"category": "none"}',
+        lambda row: guide(),
+        PATHS,
+        warmup=0,
+    )
+    assert report["predictions"] == [None]

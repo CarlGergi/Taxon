@@ -286,3 +286,43 @@ def test_the_failed_requests_are_not_cached_as_answers(tmp_path, taxonomy):
     rows = enrich([product()], {"A1": [TOTES]}, taxonomy, runner, EXACT)
     assert rows[0]["path"] is None
     assert len(ResponseCache(tmp_path / "cache")) == 0
+
+
+def test_enrichment_refuses_a_price_above_its_limit(tmp_path, inputs, monkeypatch):
+    scored(tmp_path, monkeypatch, better=SHORTLIST)
+    labeled(tmp_path)
+    assert run(tmp_path, "enrich-price", "--fake") == 0
+    path = tmp_path / "results" / "enrichment_price.json"
+    report = json.loads(path.read_text())
+    report["by_mode"][SHORTLIST]["total"]["expected"] = 15.0
+    path.write_text(json.dumps(report))
+    with pytest.raises(SystemExit, match=r"more than the \$14.00 limit"):
+        run(tmp_path, "enrich", "--fake", "--limit", "14")
+
+
+def test_enrichment_reports_what_this_run_spent_and_its_limit(
+    tmp_path, inputs, monkeypatch, capsys
+):
+    scored(tmp_path, monkeypatch, better=SHORTLIST)
+    labeled(tmp_path)
+    assert run(tmp_path, "enrich-price", "--fake") == 0
+    capsys.readouterr()
+    assert run(tmp_path, "enrich", "--fake", "--limit", "14") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["limit"] == 14.0
+    assert report["spent_this_run"] >= 0.0
+
+
+def test_a_hard_limit_stops_enrichment_spending(tmp_path, inputs, monkeypatch, capsys):
+    import shutil
+
+    scored(tmp_path, monkeypatch, better=SHORTLIST)
+    labeled(tmp_path)
+    assert run(tmp_path, "enrich-price", "--fake") == 0
+    path = tmp_path / "results" / "enrichment_price.json"
+    report = json.loads(path.read_text())
+    report["by_mode"][SHORTLIST]["total"]["expected"] = 0.0
+    path.write_text(json.dumps(report))
+    shutil.rmtree(tmp_path / "responses", ignore_errors=True)
+    assert run(tmp_path, "enrich", "--fake", "--limit", "0") == cli.EXIT_BUDGET
+    assert "STOPPED" in capsys.readouterr().out

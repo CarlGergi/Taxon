@@ -22,6 +22,7 @@ from taxon.training.examples import (
     LabeledProduct,
     LabelSource,
     load_labeled,
+    load_shortlists,
     training_examples,
 )
 from taxon.training.model import TINY
@@ -52,7 +53,7 @@ def _gold_items(products: list[dict], labels: dict) -> list[LabeledProduct]:
     ]
 
 
-def _train(args, source, products, queue, taxonomy, processor_factory) -> int:
+def _train(args, source, products, queue, taxonomy, processor_factory, derived) -> int:
     from taxon.training.train import RunRefused, TrainSettings, check_settings, run_training
 
     settings = TrainSettings(
@@ -61,6 +62,7 @@ def _train(args, source, products, queue, taxonomy, processor_factory) -> int:
         max_steps=args.max_steps,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        shortlist=args.shortlist,
     )
     try:
         check_settings(settings, source, accelerator())
@@ -72,7 +74,11 @@ def _train(args, source, products, queue, taxonomy, processor_factory) -> int:
         return EXIT_REFUSED
     items = load_labeled(source, products, queue, taxonomy, SEED, "train", args.products)
     image_for = image_lookup([i.product for i in items], args.images)
-    rows = training_examples(items, taxonomy, SEED, image_for, args.variants)
+    shortlists = None
+    if args.shortlist:
+        ranked = load_shortlists(derived / "shortlists.jsonl")
+        shortlists = {asin: paths[: args.shortlist] for asin, paths in ranked.items()}
+    rows = training_examples(items, taxonomy, SEED, image_for, args.variants, shortlists)
     record = run_training(rows, processor_factory(), settings, source, args.runs / args.name)
     print(json.dumps({k: record[k] for k in ("model", "label_source", "examples")}))
     print(f"Loss went from {record['losses'][0]:.3f} to {record['losses'][-1]:.3f}")
@@ -81,7 +87,9 @@ def _train(args, source, products, queue, taxonomy, processor_factory) -> int:
     return 0
 
 
-def _evaluate(args, source, products, queue, taxonomy, labels_path, processor_factory) -> int:
+def _evaluate(
+    args, source, products, queue, taxonomy, labels_path, processor_factory, derived
+) -> int:
     from taxon.training.evaluate import evaluate_run, load_trained, model_generate
 
     processor = processor_factory()
@@ -100,6 +108,10 @@ def _evaluate(args, source, products, queue, taxonomy, labels_path, processor_fa
         items = load_labeled(source, products, queue, taxonomy, SEED, "val", args.products)
     image_for = image_lookup([i.product for i in items], args.images)
     model, record = load_trained(run_dir, processor)
+    shortlists = None
+    if record.get("shortlist"):
+        ranked = load_shortlists(derived / "shortlists.jsonl")
+        shortlists = {i.asin: ranked[i.asin][: record["shortlist"]] for i in items}
     report = evaluate_run(
         run_dir,
         record,
@@ -109,6 +121,7 @@ def _evaluate(args, source, products, queue, taxonomy, labels_path, processor_fa
         args.on,
         hand_labels,
         taxonomy.paths(),
+        shortlists,
     )
     print(json.dumps({k: report[k] for k in ("compliance", "invariance")}, indent=2))
     if record["model"] == TINY:
@@ -196,6 +209,9 @@ def main(
     train.add_argument("--gpu", action="store_true", help="use the real model on a GPU")
     train.add_argument("--products", type=int, default=32)
     train.add_argument("--variants", type=int, default=1, help="field choices per product")
+    train.add_argument(
+        "--shortlist", type=int, default=0, help="pick the category from this many candidates"
+    )
     train.add_argument("--max-steps", type=int, default=10)
     train.add_argument("--batch-size", type=int, default=2)
     train.add_argument("--learning-rate", type=float, default=2e-4)
@@ -236,5 +252,7 @@ def main(
     if args.command == "measure":
         return _measure(args, products, queue, taxonomy, processor_factory)
     if args.command == "train":
-        return _train(args, source, products, queue, taxonomy, processor_factory)
-    return _evaluate(args, source, products, queue, taxonomy, labels_path, processor_factory)
+        return _train(args, source, products, queue, taxonomy, processor_factory, derived)
+    return _evaluate(
+        args, source, products, queue, taxonomy, labels_path, processor_factory, derived
+    )

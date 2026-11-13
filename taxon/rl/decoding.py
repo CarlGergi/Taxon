@@ -35,6 +35,14 @@ def category_trie(tokenizer, paths: Sequence[str]) -> TokenTrie:
     )
 
 
+@lru_cache(maxsize=4096)
+def shortlist_trie(tokenizer, candidates: tuple[str, ...]) -> TokenTrie:
+    """A trie over one product's candidate paths and "none"."""
+    from taxon.training.examples import NONE
+
+    return category_trie(tokenizer, [*candidates, NONE])
+
+
 @lru_cache(maxsize=4)
 def _closers(tokenizer) -> tuple[int, ...]:
     """Tokens that end a JSON string value: those whose text starts with a quote."""
@@ -153,7 +161,10 @@ def decoding_report(
     latencies, valid, asked, parsed = [], 0, 0, 0
     for row in rows:
         start = time.perf_counter()
-        text = generate_one(model, processor, row, trie, max_new_tokens)
+        row_trie = trie
+        if trie is not None and row.get("candidates") is not None:
+            row_trie = shortlist_trie(processor.tokenizer, tuple(row["candidates"]))
+        text = generate_one(model, processor, row, row_trie, max_new_tokens)
         latencies.append(time.perf_counter() - start)
         parsed += parse_fields(text) is not None
         if CATEGORY in row["requested"]:

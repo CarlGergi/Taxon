@@ -74,9 +74,7 @@ class TfidfLogisticRegression:
             scores = np.column_stack([-scores, scores])
         classes = self._model.classes_
         order = np.arange(len(classes))
-        return [
-            [str(classes[i]) for i in np.lexsort((order, -row))[:k]] for row in scores
-        ]
+        return [[str(classes[i]) for i in np.lexsort((order, -row))[:k]] for row in scores]
 
 
 def most_frequent_label(labels: Iterable[str]) -> str:
@@ -108,9 +106,7 @@ def run_baseline(
             continue
         if labels.get(product["parent_asin"]):
             splits[assign_split(product["parent_asin"], seed)].append(product)
-    gold = {
-        name: [labels[p["parent_asin"]] for p in rows] for name, rows in splits.items()
-    }
+    gold = {name: [labels[p["parent_asin"]] for p in rows] for name, rows in splits.items()}
     valid = set(taxonomy.paths())
 
     selection = {}

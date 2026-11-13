@@ -45,6 +45,8 @@ class TrainSettings:
     learning_rate: float = 2e-4
     lora_rank: int = LORA_RANK
     seed: int = SEED
+    # Candidate paths given with each request; 0 means the category is written from memory.
+    shortlist: int = 0
 
 
 def check_settings(settings, source: LabelSource, device: str | None) -> None:

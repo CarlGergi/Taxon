@@ -67,8 +67,10 @@ def toy_release():
                 "handle": "color",
                 "description": "",
                 "extended_attributes": [{"name": "Strap color", "handle": "strap-color"}],
-                "values": [{"id": "v1", "name": "Red", "handle": "red"},
-                           {"id": "v2", "name": "Blue", "handle": "blue"}],
+                "values": [
+                    {"id": "v1", "name": "Red", "handle": "red"},
+                    {"id": "v2", "name": "Blue", "handle": "blue"},
+                ],
             },
             {
                 "id": MATERIAL,

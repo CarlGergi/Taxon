@@ -68,3 +68,30 @@ def test_saved_answers_are_read_in_ladder_order_and_missing_runs_skipped(tmp_pat
 
 def test_a_ladder_with_no_shared_products_has_nothing_to_score():
     assert ladder_report(GOLDS, LABELS, [rung("sft", "free", {"x": "A"})], PATHS) is None
+
+
+# Products the run trained on
+
+
+def test_the_fit_report_scores_a_rung_against_the_labels_it_learned():
+    from taxon.ladder import fit_report
+
+    labels = {"p1": "A > B", "p2": "A > C", "p3": "D > E", "p4": "D"}
+    saved = {"free": {"p1": "A > B", "p2": "A > B", "p3": "D", "p4": None}, "constrained": {}}
+    report = fit_report(labels, saved)
+    assert report["free"]["products"] == 4
+    assert report["free"]["exact"] == 0.25
+    assert report["free"]["top_level"] == 0.75
+    low, high = report["free"]["exact_ci95"]
+    assert low < 0.25 < high
+    assert report["constrained"]["exact"] is None
+
+
+def test_the_training_sample_is_seeded_and_drawn_from_the_training_products():
+    from taxon.ladder import training_sample
+
+    ids = [f"p{i}" for i in range(200)]
+    sample = training_sample(ids, seed=7)
+    assert len(sample) == 50 and set(sample) <= set(ids)
+    assert sample == training_sample(list(reversed(ids)), seed=7)
+    assert sample != training_sample(ids, seed=8)

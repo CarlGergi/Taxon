@@ -132,3 +132,15 @@ def test_a_perfect_reply_earns_every_reward(taxonomy):
 
 def test_weights_come_in_the_order_of_the_rewards():
     assert RewardWeights().as_list() == [1.0, 1.0, 2.0, 1.0, 1.0]
+
+
+# A shortlist that does not hold the labeled path
+
+
+def test_when_the_right_pick_is_none_only_none_earns_the_path_reward(taxonomy):
+    right = score(reply(category="none"), ["category"], {"category": "none"}, taxonomy)
+    assert (right["path_match"], right["valid_node"], right["depth_penalty"]) == (1.0, 1.0, 0.0)
+    wrong = score(reply(category=TOTES), ["category"], {"category": "none"}, taxonomy)
+    assert wrong["path_match"] == 0.0
+    said_none = score(reply(category="none"), ["category"], {"category": TOTES}, taxonomy)
+    assert (said_none["path_match"], said_none["valid_node"]) == (0.0, 0.0)

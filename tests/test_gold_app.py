@@ -162,9 +162,7 @@ def test_annotator_output_cannot_reach_the_page(app, tmp_path):
     assert "ANNOTATOR" not in json.dumps(app.node(TOTES, "G1"))
 
 
-@pytest.mark.parametrize(
-    "module", [taxon.gold.app, taxon.gold.server, taxon.gold.store]
-)
+@pytest.mark.parametrize("module", [taxon.gold.app, taxon.gold.server, taxon.gold.store])
 def test_the_page_code_never_loads_annotation_modules_or_files(module):
     source = Path(module.__file__).read_text(encoding="utf-8")
     assert "taxon.labeling" not in source

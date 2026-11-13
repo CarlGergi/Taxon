@@ -46,9 +46,7 @@ class Secrets:
         return f"Secrets(set={sorted(self._values)})"
 
 
-def load_secrets(
-    path: Path = ROOT / ".env", environ: Mapping[str, str] | None = None
-) -> Secrets:
+def load_secrets(path: Path = ROOT / ".env", environ: Mapping[str, str] | None = None) -> Secrets:
     """Read keys without touching os.environ. A value in .env wins over the environment."""
     environ = os.environ if environ is None else environ
     from_file = dotenv_values(path) if path.exists() else {}

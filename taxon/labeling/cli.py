@@ -375,10 +375,17 @@ def price_enrichment_run(fake: bool, space: Workspace, secrets: Secrets) -> dict
 
 
 def run_enrichment(
-    fake: bool, space: Workspace, secrets: Secrets, direct: Sequence[str] = ()
+    fake: bool,
+    space: Workspace,
+    secrets: Secrets,
+    direct: Sequence[str] = (),
+    limit: float | None = None,
 ) -> dict:
     """Sonnet enriches the benchmark catalog. Third in line for the Anthropic budget: it waits for
-    the labeling run and its scoring on the gold set, and for a price that fits what is left."""
+    the labeling run and its scoring on the gold set, and for a price that fits what is left.
+
+    `limit` is a hard stop in dollars for this run: spending stops there even if products remain.
+    """
     if not space.labels.exists():
         raise SystemExit("Run the labeling run first; it comes before enrichment in the budget.")
     score = _require_attribute_score(space)
@@ -393,9 +400,14 @@ def run_enrichment(
             f"Enrichment is expected to cost ${expected:.2f}, more than the "
             f"${budget.remaining(ENRICHER.vendor):.2f} left under the Anthropic cap."
         )
+    if limit is not None and expected > limit:
+        raise SystemExit(
+            f"Enrichment is expected to cost ${expected:.2f}, more than the ${limit:.2f} limit."
+        )
+    spent_before = budget.spent(ENRICHER.vendor)
     taxonomy, products, gold, shortlists = _load_inputs()
     catalog = _benchmark_products(products, gold)
-    _, _, runner, tracer = _build_labeler(taxonomy, space, fake, secrets, direct)
+    _, _, runner, tracer = _build_labeler(taxonomy, space, fake, secrets, direct, limit)
     images = ImageStore(space.images)
     extra = {}
     if not fake:
@@ -415,6 +427,8 @@ def run_enrichment(
         + sum(r.get("attribute_runs", {}).get(mode, {}).get("cost", 0.0) for r in rows),
         "enrichments": str(space.enrichments),
         "spent": _spent(runner.budget),
+        "spent_this_run": Budget(space.ledger, CAPS).spent(ENRICHER.vendor) - spent_before,
+        "limit": limit,
         "fake": fake,
     }
     # The benchmark report cites this for the cost of enriching a million products.
@@ -471,6 +485,7 @@ def _parser() -> argparse.ArgumentParser:
         "enrich", help="Sonnet enriches the benchmark catalog, after labeling and gold scoring"
     )
     enrich_cmd.add_argument("--fake", action="store_true")
+    enrich_cmd.add_argument("--limit", type=float, default=None, help="hard stop in dollars")
     return parser
 
 
@@ -500,7 +515,7 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
             print(f"Anthropic remaining under the cap: ${report['anthropic_remaining']:.2f}")
             print(f"Full report: {space.enrichment_price}")
         elif args.command == "enrich":
-            report = run_enrichment(args.fake, space, secrets)
+            report = run_enrichment(args.fake, space, secrets, limit=args.limit)
             print(json.dumps(report, indent=2))
         elif args.attributes:
             report = run_attributes(args.fake, space, secrets, args.direct, args.limit)

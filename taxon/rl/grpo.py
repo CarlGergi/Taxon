@@ -23,8 +23,8 @@ from taxon.hardware import hardware
 from taxon.pins import MODEL, MODEL_REVISION, SEED
 from taxon.rl.rewards import RewardWeights, predicted_category, score
 from taxon.taxonomy import Taxonomy, split_path
-from taxon.training.examples import LabelSource
-from taxon.training.fields import CATEGORY
+from taxon.training.examples import NONE, LabelSource
+from taxon.training.fields import CATEGORY, target_text
 from taxon.training.model import LORA_RANK, TINY, lora_config
 from taxon.training.train import ADAPTER_DIR, base_model, run_device
 
@@ -47,6 +47,14 @@ class GrpoSettings:
     beta: float = 0.04
     lora_rank: int = LORA_RANK
     seed: int = SEED
+    # A checkpoint every this many steps, so a stopped run can resume. 0 saves none.
+    save_steps: int = 50
+    # Candidate paths per request, from the fine-tuning run it starts from; 0 for none.
+    shortlist: int = 0
+
+
+# Checkpoints kept on disk; older ones are deleted as new ones are written.
+CHECKPOINTS_KEPT = 2
 
 
 def _message(content_parts: Sequence[Mapping], with_image: bool, as_parts: bool = False):
@@ -110,7 +118,7 @@ def reward_functions(taxonomy: Taxonomy, depth_log: list[dict]) -> list[Callable
 def _record_depths(texts, requested, golds, taxonomy, state, depth_log) -> None:
     predicted, gold = [], []
     for text, asked, path in zip(texts, requested, golds, strict=True):
-        if CATEGORY not in asked:
+        if CATEGORY not in asked or path == NONE:
             continue
         gold.append(len(split_path(path)))
         category = predicted_category(text)
@@ -178,10 +186,28 @@ def grpo_arguments(
         use_vllm=settings.gpu and device == "cuda",
         vllm_mode="colocate",
         logging_steps=1,
-        save_strategy="no",
+        save_strategy="steps" if settings.save_steps else "no",
+        save_steps=settings.save_steps or 500,
+        save_total_limit=CHECKPOINTS_KEPT,
         report_to="none",
         disable_tqdm=True,
     )
+
+
+def pick_length(tokenizer, rows: Sequence[Mapping]) -> int:
+    """Tokens in the longest one-pick reply any row allows, plus the end token."""
+    replies = {
+        target_text([CATEGORY], {CATEGORY: pick})
+        for row in rows
+        for pick in [*row["candidates"], NONE]
+    }
+    return 1 + max(len(tokenizer.encode(r, add_special_tokens=False)) for r in replies)
+
+
+def latest_checkpoint(out_dir: Path) -> Path | None:
+    """The run's newest checkpoint folder, by step, or None."""
+    found = [p for p in out_dir.glob("checkpoint-*") if p.name.split("-")[-1].isdigit()]
+    return max(found, key=lambda p: int(p.name.split("-")[-1]), default=None)
 
 
 def starting_model(processor, settings: GrpoSettings, sft_dir: Path | None):
@@ -204,8 +230,13 @@ def run_grpo(
     weights: RewardWeights | None = None,
     extra_rewards: Sequence[Callable] = (),
     callbacks: Sequence[TrainerCallback] = (),
+    resume: bool = False,
 ) -> dict:
-    """Train with GRPO and record how. The record holds losses and depths, never an accuracy."""
+    """Train with GRPO and record how. The record holds losses and depths, never an accuracy.
+
+    With `resume`, training continues from the run's latest checkpoint when it has one. The depth
+    log then covers only the steps after it, and the record says where it resumed.
+    """
     weights = weights or RewardWeights()
     out_dir.mkdir(parents=True, exist_ok=True)
     set_seed(settings.seed)
@@ -232,7 +263,8 @@ def run_grpo(
     trainer.add_callback(StepPrinter())
     for callback in callbacks:
         trainer.add_callback(callback)
-    trainer.train()
+    checkpoint = latest_checkpoint(out_dir) if resume else None
+    trainer.train(resume_from_checkpoint=str(checkpoint) if checkpoint else None)
     trainer.model.save_pretrained(out_dir / ADAPTER_DIR)
     (out_dir / DEPTH_FILE).write_text(json.dumps(depth_log, indent=2), encoding="utf-8")
     plot_depths(depth_log, out_dir / DEPTH_PLOT)
@@ -242,6 +274,7 @@ def run_grpo(
         "rollouts": "vllm" if arguments.use_vllm else "generate",
         "model": f"{MODEL}@{MODEL_REVISION}" if settings.gpu else TINY,
         "fine_tuned_from": str(sft_dir) if sft_dir else None,
+        "resumed_from": checkpoint.name if checkpoint else None,
         "label_source": source.name,
         "provisional_labels": source.provisional,
         "prompts": len(rows),

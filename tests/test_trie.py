@@ -8,8 +8,18 @@ class MergingTokenizer:
     """Tokenizes greedily against a phrase list, so a string's tokens depend on what
     follows it: "Bags" is one token, while "Bag Straps" starts with a different one."""
 
-    PIECES = ["Bags", "Bag", " Straps", " > ", "Apparel", "Home", " Totes", "Totes", "Kitchen",
-              "Knives"]
+    PIECES = [
+        "Bags",
+        "Bag",
+        " Straps",
+        " > ",
+        "Apparel",
+        "Home",
+        " Totes",
+        "Totes",
+        "Kitchen",
+        "Knives",
+    ]
 
     def __init__(self):
         self.vocab = {piece: i for i, piece in enumerate(self.PIECES)}

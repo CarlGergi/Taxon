@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from taxon.fetch import fetch
@@ -20,6 +21,9 @@ from taxon.training.examples import (
     SILVER,
     LabelSource,
     load_labeled,
+    load_shortlists,
+    request_row,
+    shortlist_answer,
     training_examples,
 )
 from taxon.training.model import TINY
@@ -31,8 +35,10 @@ EXIT_REFUSED = 2
 TINY_NOTE = "Tiny random weights: this shows the pipeline runs, and says nothing about quality."
 
 
-def _train(args, source, products, queue, taxonomy, processor_factory) -> int:
-    from taxon.rl.grpo import GrpoSettings, run_grpo
+def _train(args, source, products, queue, taxonomy, processor_factory, derived) -> int:
+    from taxon.rl.enrich import run_shortlist
+    from taxon.rl.grpo import GrpoSettings, pick_length, run_grpo
+    from taxon.training.fields import CATEGORY
     from taxon.training.train import RunRefused, check_settings
 
     settings = GrpoSettings(
@@ -43,6 +49,7 @@ def _train(args, source, products, queue, taxonomy, processor_factory) -> int:
         batch_size=args.generations * args.prompts,
         max_completion_length=args.max_completion_length,
         learning_rate=args.learning_rate,
+        save_steps=args.save_steps,
     )
     try:
         check_settings(settings, source, accelerator())
@@ -60,16 +67,44 @@ def _train(args, source, products, queue, taxonomy, processor_factory) -> int:
         return EXIT_REFUSED
     items = load_labeled(source, products, queue, taxonomy, SEED, "train", args.products)
     image_for = image_lookup([i.product for i in items], args.images)
-    rows = training_examples(items, taxonomy, SEED + 1, image_for)
+    shortlists = None
+    if sft_dir is not None:
+        k = run_shortlist(json.loads((sft_dir / "run.json").read_text(encoding="utf-8")))
+        if k:
+            settings = replace(settings, shortlist=k)
+            ranked = load_shortlists(derived / "shortlists.jsonl")
+            shortlists = {item.asin: ranked[item.asin][:k] for item in items}
+    if shortlists:
+        # On a shortlist the answer is one pick: ask for the category alone and stop generating
+        # once the longest pick could be done.
+        rows = [
+            request_row(item, [CATEGORY], image_for, candidates=shortlists[item.asin])
+            for item in items
+        ]
+        processor = processor_factory()
+        if not args.keep_length:
+            settings = replace(
+                settings, max_completion_length=pick_length(processor.tokenizer, rows)
+            )
+    else:
+        rows = training_examples(items, taxonomy, SEED + 1, image_for)
+        processor = processor_factory()
+    golds = {
+        item.asin: shortlist_answer(item.category, shortlists[item.asin])
+        if shortlists
+        else item.category
+        for item in items
+    }
     record = run_grpo(
         rows,
-        processor_factory(),
+        processor,
         taxonomy,
         settings,
         source,
         args.runs / args.name,
-        {item.asin: item.category for item in items},
+        golds,
         sft_dir,
+        resume=args.resume,
     )
     print(json.dumps({k: record[k] for k in ("model", "label_source", "prompts")}))
     print(f"Depth plot: {args.runs / args.name / 'depth.png'}")
@@ -78,9 +113,9 @@ def _train(args, source, products, queue, taxonomy, processor_factory) -> int:
     return 0
 
 
-def _decode(args, source, products, queue, taxonomy, processor_factory) -> int:
+def _decode(args, source, products, queue, taxonomy, processor_factory, derived) -> int:
     from taxon.rl.decoding import category_trie, decoding_report
-    from taxon.rl.enrich import load_run_model
+    from taxon.rl.enrich import load_run_model, run_shortlist
 
     run_dir = args.runs / args.name
     if not (run_dir / "run.json").exists():
@@ -90,7 +125,12 @@ def _decode(args, source, products, queue, taxonomy, processor_factory) -> int:
     model, record = load_run_model(run_dir, processor)
     items = load_labeled(source, products, queue, taxonomy, SEED, "val", args.products)
     image_for = image_lookup([i.product for i in items], args.images)
-    rows = training_examples(items, taxonomy, SEED + 2, image_for)
+    k = run_shortlist(record)
+    shortlists = None
+    if k:
+        ranked = load_shortlists(derived / "shortlists.jsonl")
+        shortlists = {item.asin: ranked[item.asin][:k] for item in items}
+    rows = training_examples(items, taxonomy, SEED + 2, image_for, shortlists=shortlists)
     trie = category_trie(processor.tokenizer, taxonomy.paths())
     reports = [
         decoding_report(model, processor, rows, taxonomy, trie if constrained else None)
@@ -103,12 +143,18 @@ def _decode(args, source, products, queue, taxonomy, processor_factory) -> int:
     return 0
 
 
-def _enrich(args, products, queue, taxonomy, processor_factory) -> int:
+def _enrich(args, products, queue, taxonomy, processor_factory, derived) -> int:
     """Taxon enriches the benchmark catalog with a trained run."""
     from taxon.bench.agent import benchmark_catalog_ids
     from taxon.hardware import hardware
     from taxon.rl.decoding import category_trie
-    from taxon.rl.enrich import enrich_catalog, enrichment_rows, load_run_model, model_generate
+    from taxon.rl.enrich import (
+        enrich_catalog,
+        enrichment_rows,
+        load_run_model,
+        model_generate,
+        run_shortlist,
+    )
 
     run_dir = args.runs / args.name
     if not (run_dir / "run.json").exists():
@@ -122,8 +168,17 @@ def _enrich(args, products, queue, taxonomy, processor_factory) -> int:
     model, record = load_run_model(run_dir, processor)
     trie = category_trie(processor.tokenizer, taxonomy.paths())
     image_for = image_lookup(catalog, args.images)
+    k = run_shortlist(record)
+    shortlists = None
+    if k:
+        ranked = load_shortlists(derived / "shortlists.jsonl")
+        shortlists = {p["parent_asin"]: ranked[p["parent_asin"]][:k] for p in catalog}
     rows, report = enrich_catalog(
-        catalog, taxonomy, model_generate(model, processor, trie), image_for
+        catalog,
+        taxonomy,
+        model_generate(model, processor, trie),
+        image_for,
+        shortlists=shortlists,
     )
     enriched = enrichment_rows(rows)
     write_jsonl(run_dir / ENRICHMENTS_FILE, enriched)
@@ -165,7 +220,14 @@ def main(
     train.add_argument("--generations", type=int, default=4, help="replies per prompt")
     train.add_argument("--prompts", type=int, default=2, help="prompts per step")
     train.add_argument("--max-completion-length", type=int, default=128)
+    train.add_argument(
+        "--keep-length",
+        action="store_true",
+        help="on a shortlist, keep --max-completion-length instead of the longest pick's length",
+    )
     train.add_argument("--learning-rate", type=float, default=1e-5)
+    train.add_argument("--save-steps", type=int, default=50, help="checkpoint interval; 0 for none")
+    train.add_argument("--resume", action="store_true", help="continue from the latest checkpoint")
     decode = commands.add_parser("decode", help="free against trie-constrained decoding")
     decode.add_argument("--name", default="grpo-tiny")
     decode.add_argument("--labels", choices=sorted(sources), default=SILVER.name)
@@ -186,8 +248,8 @@ def main(
     products = read_jsonl(derived / "products.jsonl")
     queue = [row["parent_asin"] for row in read_jsonl(derived / "gold_queue.jsonl")]
     if args.command == "enrich":
-        return _enrich(args, products, queue, taxonomy, processor_factory)
+        return _enrich(args, products, queue, taxonomy, processor_factory, derived)
     source = sources[args.labels]
     if args.command == "train":
-        return _train(args, source, products, queue, taxonomy, processor_factory)
-    return _decode(args, source, products, queue, taxonomy, processor_factory)
+        return _train(args, source, products, queue, taxonomy, processor_factory, derived)
+    return _decode(args, source, products, queue, taxonomy, processor_factory, derived)

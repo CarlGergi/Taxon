@@ -245,3 +245,38 @@ def test_attributes_come_only_from_what_the_listing_states(labeled_world, taxono
 def test_silver_labels_are_marked_provisional_and_pipeline_labels_are_not():
     assert SILVER.provisional is True
     assert LABEL_SOURCES["pipeline"].provisional is False
+
+
+# Picking the category from a shortlist
+
+
+def test_a_shortlist_request_lists_the_candidates_and_says_to_pick_one():
+    from taxon.training.examples import SHORTLIST_SYSTEM
+
+    messages = messages_for(product("T1"), [CATEGORY], False, [TOTES, KNIVES])
+    text = messages[1]["content"][-1]["text"]
+    assert f"Candidates:\n{TOTES}\n{KNIVES}\n\nFields: category" in text
+    assert messages[0]["content"][0]["text"] == SHORTLIST_SYSTEM
+    assert '"none"' in SHORTLIST_SYSTEM and "copied exactly" in SHORTLIST_SYSTEM
+    assert (
+        "Candidates" not in messages_for(product("T1"), [CATEGORY], False)[1]["content"][-1]["text"]
+    )
+
+
+def test_the_answer_is_the_label_when_listed_and_none_when_not():
+    item = LabeledProduct(product("T1"), TOTES, {"color": "Red"})
+    listed = request_row(item, [CATEGORY, "color"], no_image, candidates=[KNIVES, TOTES])
+    assert json.loads(listed["target"]) == {CATEGORY: TOTES, "color": "Red"}
+    assert listed["candidates"] == [KNIVES, TOTES]
+    missing = request_row(item, [CATEGORY], no_image, candidates=[KNIVES])
+    assert json.loads(missing["target"]) == {CATEGORY: "none"}
+
+
+def test_with_shortlists_every_example_asks_for_the_category(taxonomy):
+    shortlists = {i.asin: [TOTES, KNIVES] for i in items()}
+    rows = training_examples(items(), taxonomy, SEED, no_image, 2, shortlists)
+    assert all(row["requested"][0] == CATEGORY for row in rows)
+    assert all(row["candidates"] == [TOTES, KNIVES] for row in rows)
+    plain = training_examples(items(), taxonomy, SEED, no_image, 2)
+    assert any(CATEGORY not in row["requested"] for row in plain)
+    assert all(row["candidates"] is None for row in plain)
