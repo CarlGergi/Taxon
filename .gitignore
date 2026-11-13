@@ -3,7 +3,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
-data/
+data/*
+# The 50 hand labels are committed, product IDs and labels only, so the benchmark can be rebuilt.
+!data/gold/
+data/gold/*
+!data/gold/labels.jsonl
 results/
 .env
 target/

@@ -1,6 +1,6 @@
 .PHONY: setup test lint reproduce clean backup gold label-fake label-dry-run label-first \
 	label-gold-pool label-attributes ladder tasks-draft tasks-review tasks-check search-index search search-serve train-tiny train-gpu \
-	judge-price judge-sample judge-review judge-agreement judge-pool rl-tiny rl-gpu measure shop-price shop enrich-price enrich enrich-taxon bench-score quant-prepare quant
+	judge-price judge-sample judge-review judge-agreement judge-pool rl-tiny rl-gpu measure shop-price shop enrich-price enrich enrich-taxon bench-score figures quant-prepare quant
 
 TARGET ?= 50
 TASKS ?= 100
@@ -10,14 +10,19 @@ CONDITION ?= raw
 RUNS ?= 3
 QUANT_RUN ?= data/rl/qwen-lora-grpo
 LADDER_RUN ?= data/training/qwen-lora
+# gold: the hand-labeled products; train: 50 of the run's own training products.
+LADDER_ON ?= gold
 RUN ?= qwen-lora
 PRODUCTS ?= 2000
 STEPS ?= 2000
 # Two field choices per product, so the model learns its category answer should not change with them.
 VARIANTS ?= 2
+# Candidate paths to pick the category from, as the annotators do; 0 writes it from memory.
+SHORTLIST ?= 0
 # Sized from make measure on the M5 Max: about 16 s a step, so 1,600 steps fill an 8-hour night.
 GRPO_STEPS ?= 1600
-RUNS ?= data/bench/runs.jsonl
+# The agent runs' log, which the judge commands pool returned products from.
+AGENT_RUNS ?= data/bench/agent/runs.jsonl
 
 # Homebrew's rustup keeps cargo off PATH, so ask rustup where this repository's toolchain is. The
 # full path is needed because make 3.81 ignores its own PATH when it looks up a command.
@@ -90,11 +95,12 @@ tasks-check:
 
 # Pooled judging of what agents return. RUNS is the agents' output: condition, run, task, returned.
 # judge-price spends nothing. The rest spend within the caps, and judge-pool waits for agreement.
+# DIRECT=1 sends judge calls one by one at full price when a batch stalls; LIMIT caps the dollars.
 judge-price judge-sample judge-pool:
-	uv run python -m taxon.bench $@ --runs "$(RUNS)"
+	uv run python -m taxon.bench $@ --runs "$(AGENT_RUNS)" $(if $(DIRECT),--direct) $(if $(LIMIT),--limit $(LIMIT))
 
 judge-review judge-agreement:
-	uv run python -m taxon.bench $@ --runs "$(RUNS)"
+	uv run python -m taxon.bench $@ --runs "$(AGENT_RUNS)"
 
 # The catalog search engine. An enriched catalog takes CATALOG=name ENRICHMENTS=path.
 search-index:
@@ -106,15 +112,20 @@ enrich-price:
 
 # Sonnet enriches the benchmark catalog; refuses before labeling, gold scoring and a fitting price.
 enrich:
-	uv run python -m taxon.labeling enrich
+	uv run python -m taxon.labeling enrich $(if $(LIMIT),--limit $(LIMIT))
 
-# Taxon enriches the benchmark catalog with a trained run, on this machine.
+# Taxon enriches the benchmark catalog with a trained run, on this machine. A fine-tuning run
+# (rather than a GRPO one) takes RUNS_DIR=data/training.
 enrich-taxon:
-	uv run python -m taxon.rl enrich --name $(RUN) --images data/images
+	uv run python -m taxon.rl enrich --name $(RUN) --images data/images $(if $(RUNS_DIR),--runs $(RUNS_DIR))
 
 # The benchmark report, once every catalog's runs are in and every returned product is judged.
 bench-score:
 	uv run python -m taxon.bench score $(if $(TAXON_RUN),--taxon-run $(TAXON_RUN))
+
+# The README's figures, drawn from results/ into docs/images. Free.
+figures:
+	uv run python -m taxon.figures
 
 # The quantization study on this Mac: merge a trained run, convert it to bf16, 8-bit and 4-bit with
 # MLX, then measure each on the gold set. Free; MLX is installed only for these two targets.
@@ -131,7 +142,7 @@ shop-price:
 # make shop CONDITION=raw RUNS=1 [FAKE=1]: the agent on one catalog, runs 1..RUNS of the first 100 tasks.
 # Finished runs are skipped, so RUNS=1 on every catalog, then RUNS=2, keeps the catalogs even.
 shop:
-	uv run python -m taxon.bench shop --condition $(CONDITION) --runs $(RUNS) $(if $(FAKE),--fake)
+	uv run python -m taxon.bench shop --condition $(CONDITION) --runs $(RUNS) $(if $(FAKE),--fake) $(if $(LIMIT),--limit $(LIMIT))
 
 # make search REQUEST='{"query": "red chef knife", "max_price": 50}'
 search:
@@ -150,7 +161,7 @@ train-tiny:
 # The real model on this machine's GPU (Apple or NVIDIA), with labels from the labeling pipeline.
 train-gpu:
 	uv run python -m taxon.training train --gpu --labels pipeline --name $(RUN) --products $(PRODUCTS) \
-		--max-steps $(STEPS) --variants $(VARIANTS)
+		--max-steps $(STEPS) --variants $(VARIANTS) --shortlist $(SHORTLIST)
 
 # GRPO on CPU with tiny random weights, on top of make train-tiny's adapter, then free against
 # trie-constrained decoding. This only shows the pipeline runs: its numbers are not results.
@@ -162,12 +173,12 @@ rl-tiny:
 # plain generation on Apple.
 rl-gpu:
 	uv run python -m taxon.rl train --gpu --labels pipeline --from $(RUN) --name $(RUN)-grpo \
-		--products $(PRODUCTS) --max-steps $(GRPO_STEPS)
+		--products $(PRODUCTS) --max-steps $(GRPO_STEPS) $(if $(RESUME),--resume)
 
 # Ask a trained run for the category of every hand-labeled product, free and trie-constrained,
 # and save the answers to data/ladder/. make reproduce scores them against the pipeline labels.
 ladder:
-	uv run python -m taxon.ladder $(LADDER_RUN)
+	uv run python -m taxon.ladder $(LADDER_RUN) --on $(LADDER_ON)
 
 # A few real fine-tuning and GRPO steps on this machine's GPU, timed, to size overnight runs.
 # Writes results/training_hardware.json. It uses provisional labels only for timing.

@@ -201,8 +201,37 @@ def test_the_baseline_is_rerun_on_pipeline_labels_when_they_exist(gold_world, ta
         store.path,
         tmp_path / "none",
         training_path,
+        tmp_path / "no-ladder",
     )
     assert report["baseline_trained_on_pipeline_labels"]["n"] == 1
+    assert "ladder_fit_to_training_labels" not in report
+
+
+def test_a_run_s_fit_to_its_own_training_labels_is_reported(gold_world, taxonomy):
+    products, labels, queue, store, shortlists, tmp_path = gold_world
+    store.label(queue[0], labels[queue[0]], {})
+    pool = set(queue)
+    trained = [p["parent_asin"] for p in products if p["parent_asin"] not in pool][:4]
+    training_path = tmp_path / "training.jsonl"
+    write_jsonl(training_path, [{"parent_asin": a, "path": labels[a]} for a in trained])
+    ladder = tmp_path / "ladder"
+    ladder.mkdir()
+    answers = {a: labels[a] for a in trained[:3]} | {trained[3]: None}
+    (ladder / "qwen-lora-shortlist.train.json").write_text(json.dumps({"constrained": answers}))
+    report = gold_report(
+        products,
+        taxonomy,
+        queue,
+        labels,
+        shortlists,
+        10.0,
+        store.path,
+        tmp_path / "none",
+        training_path,
+        ladder,
+    )
+    fit = report["ladder_fit_to_training_labels"]["qwen-lora-shortlist"]["constrained"]
+    assert (fit["products"], fit["exact"]) == (4, 0.75)
 
 
 def test_a_gold_product_in_the_training_labels_stops_the_report(gold_world, taxonomy):

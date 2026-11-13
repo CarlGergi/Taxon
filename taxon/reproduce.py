@@ -32,7 +32,7 @@ from taxon.hardware import hardware
 from taxon.labeling.attributes import EXACT, MODES, SHORTLIST
 from taxon.labeling.report import agreement_report, arbitrator_score
 from taxon.labeling.retrieval import CandidateRetriever, build_shortlists, recall_at
-from taxon.ladder import LADDER_DIR, ladder_report, saved_rungs
+from taxon.ladder import LADDER_DIR, ladder_report, saved_fits, saved_rungs
 from taxon.pins import (
     AMAZON_FILE_SIZES,
     AMAZON_REVISION,
@@ -56,8 +56,9 @@ SUGGESTIONS = 5
 RECALL_CUTOFFS = (10, 30, 50)
 LABELING_ROWS = DATA_DIR / "labeling" / "labels.jsonl"
 GOLD_POOL_ROWS = DATA_DIR / "labeling" / "gold_pool_labels.jsonl"
-# The trained runs, in ladder order: fine-tuning, then GRPO on top of it.
-LADDER_RUNS = ("qwen-lora", "qwen-lora-grpo")
+# The trained runs, in ladder order: fine-tuning that writes the category, fine-tuning that picks it
+# from a shortlist, then GRPO on top of each. Runs never trained are skipped.
+LADDER_RUNS = ("qwen-lora", "qwen-lora-shortlist", "qwen-lora-grpo", "qwen-lora-shortlist-grpo")
 TRAINING_LABELS = DATA_DIR / "labeling" / "training_labels.jsonl"
 
 
@@ -214,6 +215,9 @@ def gold_report(
         report["pipeline_labels_minus_silver_for_the_baseline"] = paired_difference(
             golds, better_predictions, predictions
         )
+        fits = saved_fits(LADDER_RUNS, pipeline, ladder_dir)
+        if fits:
+            report["ladder_fit_to_training_labels"] = fits
     if rows_path.exists():
         rows = {row["parent_asin"]: row for row in read_jsonl(rows_path)}
         checked = [a for a in asins if a in rows and rows[a]["path"]]
@@ -314,7 +318,29 @@ def main() -> None:
         write_result("labeling", agreement_report(read_jsonl(LABELING_ROWS)))
     else:
         print("Nothing has been labeled yet, so agreement rates are skipped.", flush=True)
+    attribute_support_report(products, taxonomy, queue)
     benchmark_report()
+
+
+def attribute_support_report(
+    products: list[dict], taxonomy: Taxonomy, queue: list[str], labels_path: Path = LABELS_PATH
+) -> None:
+    """How far each enriched catalog's attributes are backed by its listings, once both exist."""
+    from taxon.bench import cli as bench
+    from taxon.bench import support
+
+    files = {
+        "sonnet": support.enrichment_file(bench.SONNET_ENRICHMENT),
+        "taxon": support.enrichment_file(bench.TAXON_ENRICHMENT),
+    }
+    gold = GoldStore(labels_path, queue, taxonomy).labels()
+    if not all(files.values()) or not gold:
+        print("No enriched catalogs yet, so attribute support is not checked.", flush=True)
+        return
+    ids = set(bench._benchmark_ids(DERIVED_DIR))
+    catalog = [p for p in products if p["parent_asin"] in ids]
+    report = support.support_report(catalog, files, gold, taxonomy)
+    write_result("attribute_support", report)
 
 
 def benchmark_report() -> None:
@@ -326,6 +352,9 @@ def benchmark_report() -> None:
         print("No agent runs yet, so the benchmark is not scored.", flush=True)
         return
     bench.main(["score"])
+    from taxon import figures
+
+    figures.main()
 
 
 if __name__ == "__main__":

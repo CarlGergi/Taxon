@@ -233,8 +233,15 @@ def test_the_real_index_applies_a_price_filter_and_reports_the_others():
     assert unavailable["results"]
 
 
+def _documents() -> str:
+    """The README and the detailed write-up it links to, where every reported number must match."""
+    return "\n".join(
+        (REPO_ROOT / name).read_text(encoding="utf-8") for name in ("README.md", "docs/DETAILS.md")
+    )
+
+
 def test_the_readme_reports_the_current_results():
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    readme = _documents()
     result = json.loads((RESULTS_DIR / "baseline.json").read_text(encoding="utf-8"))
     silver_result = json.loads((RESULTS_DIR / "silver.json").read_text(encoding="utf-8"))
     model = result["tfidf_logistic_regression"]
@@ -280,11 +287,201 @@ def test_the_readme_reports_the_current_results():
     assert not missing, f"README is out of date: {missing}"
 
 
+def test_the_readme_reports_the_judge_s_validation():
+    path = RESULTS_DIR / "catalogbench.json"
+    if not path.exists():
+        pytest.skip("the benchmark is not scored yet")
+    judge = json.loads(path.read_text(encoding="utf-8"))["judge"]
+    readme = " ".join(_documents().split())
+
+    def with_ci(value, bounds, digits=1, scale=100):
+        return f"{value * scale:.{digits}f}{'%' if scale == 100 else ''} " + (
+            f"[{bounds[0] * scale:.{digits}f}, {bounds[1] * scale:.{digits}f}]"
+        )
+
+    first, final, verdicts = judge["first_sample"], judge["agreement"], judge["verdicts"]
+    first_agreed = (
+        first["confusion"]["judge_meets_hand_meets"] + first["confusion"]["judge_fails_hand_fails"]
+    )
+    final_agreed = (
+        final["confusion"]["judge_meets_hand_meets"] + final["confusion"]["judge_fails_hand_fails"]
+    )
+    expected = [
+        f"the judge was unsure of {first['judge_unsure']} of the first "
+        f"{first['hand_judged']} pairs",
+        f"so the sample grew to {judge['sample']}",
+        f"on {first_agreed} of the {first['answered']} it answered in the first "
+        f"{first['hand_judged']} ({first['agreement'] * 100:.1f}%)",
+        f"on {final_agreed} of the {final['answered']} in the full sample: "
+        f"**{with_ci(final['agreement'], final['agreement_ci95'])}**",
+        f"Cohen's kappa **{with_ci(final['kappa'], final['kappa_ci95'], 2, 1)}**",
+        f"Across the whole pool of {judge['pool']} pairs, the judge said {verdicts['meets']} meet "
+        f"their task, {verdicts['fails']} fail and {verdicts['unsure']} are unsure.",
+    ]
+    names = {"raw": "the raw catalog's", "sonnet": "Sonnet's", "taxon": "Taxon's"}
+    for condition, row in final["per_condition"].items():
+        expected.append(
+            f"{with_ci(row['agreement'], row['agreement_ci95'])} of {names[condition]} "
+            f"{row['answered']}"
+        )
+    missing = [phrase for phrase in expected if phrase not in readme]
+    assert not missing, f"README is out of date: {missing}"
+
+
+def test_the_readme_reports_the_benchmark():
+    path = RESULTS_DIR / "catalogbench.json"
+    if not path.exists():
+        pytest.skip("the benchmark is not scored yet")
+    report = json.loads(path.read_text(encoding="utf-8"))
+    readme = _documents()
+    catalogs = ("raw", "sonnet", "taxon")
+    over = {c: report["catalogs"][c]["over_tasks"] for c in catalogs}
+    paired = report["paired"]
+
+    def share(v, b):
+        return f"{v * 100:.1f}% [{b[0] * 100:.1f}, {b[1] * 100:.1f}]"
+
+    def points(x):
+        return f"{x['difference'] * 100:.1f} [{x['ci95'][0] * 100:.1f}, {x['ci95'][1] * 100:.1f}]"
+
+    def plain(v, b):
+        return f"{v:.2f} [{b[0]:.2f}, {b[1]:.2f}]"
+
+    def plain_diff(x):
+        return plain(x["difference"], x["ci95"])
+
+    def tokens(v, b):
+        return f"{v:,.0f} [{b[0]:,.0f}, {b[1]:,.0f}]"
+
+    def tokens_diff(x):
+        return tokens(x["difference"], x["ci95"])
+
+    def dollars(v, b):
+        return f"${v * 1000:.2f} [{b[0] * 1000:.2f}, {b[1] * 1000:.2f}]"
+
+    def dollars_diff(x):
+        low, high = x["ci95"]
+        return f"{x['difference'] * 1000:.2f} [{low * 1000:.2f}, {high * 1000:.2f}]"
+
+    rows = [
+        ("Tasks solved", "success", share, points),
+        ("Precision", "precision", share, points),
+        ('"No product matches" answers', "empty_answers", share, points),
+        ("Searches per task", "searches", plain, plain_diff),
+        ("Model calls per task", "model_calls", plain, plain_diff),
+        ("Tokens per task", "tokens", tokens, tokens_diff),
+        ("Agent cost per 1,000 tasks", "cost", dollars, dollars_diff),
+    ]
+    expected = [
+        f"{report['tasks']} hand-checked tasks from {report['source_products']} "
+        "hand-labeled products"
+    ]
+    for label, metric, cell, diff in rows:
+        cells = " | ".join(cell(over[c][metric]["mean"], over[c][metric]["ci95"]) for c in catalogs)
+        expected.append(
+            f"| {label} | {cells} | {diff(paired['taxon_minus_raw'][metric])} | "
+            f"{diff(paired['taxon_minus_sonnet'][metric])} |"
+        )
+    enrichment = {c: report["catalogs"][c]["enrichment"] for c in catalogs}
+    sonnet = enrichment["sonnet"]["dollars_per_million_products"] * 2_000 / 1_000_000
+    hours = enrichment["taxon"]["local_hours_per_million_products"] * 2_000 / 1_000_000
+    chip = enrichment["taxon"]["hardware"]["chip"].removeprefix("Apple ")
+    expected.append(
+        f"| Enriching the 2,000 products | none | ${sonnet:,.2f} in API calls | "
+        f"no API cost; {hours:.1f} hours on one {chip} | | |"
+    )
+    split = report["exploratory"]
+    for key, label in (
+        ("named_in_title", "Title names a requirement"),
+        ("not_named_in_title", "Title names none"),
+    ):
+        group = split[key]
+        cells = " | ".join(
+            share(group["success"][c]["mean"], group["success"][c]["ci95"]) for c in catalogs
+        )
+        expected.append(
+            f"| {label} | {group['tasks']} | {cells} | {points(group['taxon_minus']['raw'])} | "
+            f"{points(group['taxon_minus']['sonnet'])} |"
+        )
+    glance = {"raw": "the raw catalog", "sonnet": "Sonnet's catalog", "taxon": "Taxon's catalog"}
+    for c in catalogs:
+        expected.append(
+            f"| Tasks solved on {glance[c]} | "
+            f"{share(over[c]['success']['mean'], over[c]['success']['ci95'])} |"
+        )
+    for other, name in (("raw", "raw"), ("sonnet", "Sonnet")):
+        x = paired[f"taxon_minus_{other}"]["success"]
+        low, high = (bound * 100 for bound in x["ci95"])
+        expected.append(
+            f"| Taxon minus {name} | {x['difference'] * 100:.1f} points [{low:.1f}, {high:.1f}]"
+        )
+    missing = [line for line in expected if line not in readme]
+    assert not missing, f"README is out of date: {missing}"
+
+
+def test_the_readme_reports_attribute_support():
+    path = RESULTS_DIR / "attribute_support.json"
+    if not path.exists():
+        pytest.skip("no enriched catalogs yet")
+    report = json.loads(path.read_text(encoding="utf-8"))
+    readme = _documents()
+
+    def rate(part, whole, share, bounds):
+        low, high = (b * 100 for b in bounds)
+        return f"{part:,} of {whole:,}, {share * 100:.1f}% [{low:.1f}, {high:.1f}]"
+
+    cells = {}
+    for name in ("taxon", "sonnet"):
+        origin, hand, other = (
+            report[name]["country_of_origin"],
+            report[name]["hand_labels"],
+            report[name]["catch_all"],
+        )
+        labeled = hand["match"] + hand["contradict"]
+        cells[name] = [
+            rate(
+                origin["not_named"],
+                origin["specific_countries"],
+                origin["not_named_share"],
+                origin["not_named_share_ci95"],
+            ),
+            rate(
+                hand["blank_in_hand_label"],
+                hand["values_on_shown_attributes"],
+                hand["blank_share"],
+                hand["blank_share_ci95"],
+            ),
+            rate(
+                hand["contradict"],
+                labeled,
+                hand["contradict_share_of_hand_labeled"],
+                hand["contradict_share_ci95"],
+            ),
+            f"{other['other']:,} of {other['values']:,}, {other['other_share'] * 100:.1f}%",
+        ]
+    labels = [
+        "Specific countries of origin that the listing text never names",
+        "Values on verified products where the hand label is blank",
+        "Values on verified products that contradict the hand label",
+        'Values that are the catch-all "Other"',
+    ]
+    expected = [
+        f"| {label} | {taxon} | {sonnet} |"
+        for label, taxon, sonnet in zip(labels, cells["taxon"], cells["sonnet"], strict=True)
+    ]
+    expected.append(
+        f"(Taxon {report['taxon']['hand_labels']['products']}, "
+        f"Sonnet {report['sonnet']['hand_labels']['products']})"
+    )
+    missing = [line for line in expected if line not in readme]
+    assert not missing, f"README is out of date: {missing}"
+
+
 def test_the_readme_reports_the_current_gold_results():
     gold_path = RESULTS_DIR / "gold_eval.json"
     if not gold_path.exists():
         pytest.skip("no hand labels yet")
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    readme = _documents()
     gold = json.loads(gold_path.read_text(encoding="utf-8"))
     labeling = json.loads((RESULTS_DIR / "labeling.json").read_text(encoding="utf-8"))
 
@@ -326,13 +523,22 @@ def test_the_readme_reports_the_current_gold_results():
     assert not missing, f"README is out of date: {missing}"
 
 
+# The README's name for each trained run.
+LADDER_NAMES = {
+    "qwen-lora": "Fine-tuned",
+    "qwen-lora-shortlist": "Fine-tuned on a shortlist",
+    "qwen-lora-grpo": "Fine-tuned, then GRPO",
+    "qwen-lora-shortlist-grpo": "Fine-tuned on a shortlist, then GRPO",
+}
+
+
 def test_the_readme_reports_the_current_ladder():
     gold_path = RESULTS_DIR / "gold_eval.json"
     if not gold_path.exists() or "ladder" not in json.loads(gold_path.read_text()):
         pytest.skip("no trained model has been asked about the gold products yet")
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    readme = _documents()
     ladder = json.loads(gold_path.read_text(encoding="utf-8"))["ladder"]
-    names = {"qwen-lora": "Fine-tuned", "qwen-lora-grpo": "Fine-tuned, then GRPO"}
+    names = LADDER_NAMES
 
     def share(value, bounds):
         return f"{value * 100:.1f}% [{bounds[0] * 100:.1f}, {bounds[1] * 100:.1f}]"
@@ -353,4 +559,29 @@ def test_the_readme_reports_the_current_ladder():
             f"{points(rung['minus_pipeline_labels'])} |"
         )
     missing = [line for line in expected if line not in readme]
+    assert not missing, f"README is out of date: {missing}"
+
+
+def test_the_readme_reports_each_run_s_fit_to_its_training_labels():
+    gold_path = RESULTS_DIR / "gold_eval.json"
+    if not gold_path.exists():
+        pytest.skip("no gold scoring yet")
+    fits = json.loads(gold_path.read_text(encoding="utf-8")).get("ladder_fit_to_training_labels")
+    if not fits:
+        pytest.skip("no trained model has been asked about its training products yet")
+    readme = _documents()
+
+    def share(value, bounds):
+        return f"{value * 100:.1f}% [{bounds[0] * 100:.1f}, {bounds[1] * 100:.1f}]"
+
+    missing = []
+    for name, fit in fits.items():
+        for decoding, entry in fit.items():
+            line = (
+                f"| {LADDER_NAMES[name]} | {decoding} | "
+                f"{share(entry['exact'], entry['exact_ci95'])} | "
+                f"{share(entry['top_level'], entry['top_level_ci95'])} |"
+            )
+            if line not in readme:
+                missing.append(line)
     assert not missing, f"README is out of date: {missing}"

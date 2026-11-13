@@ -143,7 +143,12 @@ def test_a_missing_icloud_drive_stops_rather_than_faking_a_backup(monkeypatch, t
 
 def test_paid_responses_cannot_be_committed_by_accident():
     ignored = Path(ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
-    assert "data/" in ignored
+    # Everything under data/ stays out of git except the hand labels, which hold no paid output.
+    assert "data/*" in ignored and "data/gold/*" in ignored
+    assert [line for line in ignored if line.startswith("!")] == [
+        "!data/gold/",
+        "!data/gold/labels.jsonl",
+    ]
     assert ".env" in ignored
 
 

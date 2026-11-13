@@ -1,24 +1,75 @@
 # Taxon
 
-Catalog intelligence for AI shopping agents.
+A small local model that files products into Shopify's taxonomy, and a benchmark that asks whether
+shopping agents do better for it.
 
-Taxon post-trains a small vision-language model to classify products into Shopify's open
-product taxonomy and extract their attributes. CatalogBench, its agent benchmark, then measures
-whether shopping agents find the right products more often on a Taxon-enriched catalog than on a
-raw one.
+![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB) ![Rust](https://img.shields.io/badge/Rust-tantivy-B7410E) ![PyTorch](https://img.shields.io/badge/PyTorch-LoRA-EE4C2C) ![TRL](https://img.shields.io/badge/TRL-GRPO-FFD21E) ![MCP](https://img.shields.io/badge/MCP-search%20tool-555555) ![License: MIT](https://img.shields.io/badge/License-MIT-2E7D32)
 
-## Status
+![Bar chart of CatalogBench task success by catalog: raw catalog 90.2%, enriched by Sonnet 89.5%, enriched by Taxon 93.8%, each with a 95% interval and one dot per round; the intervals overlap.](docs/images/task-success.png)
 
-Milestone 1 is complete. Milestone 2's code is built and tested against fake vendors. The labeling
-run, the gold set and the benchmark tasks are still to come, so nothing below measures real
-annotator labels. The search side of milestone 5 is built and tested on the raw catalog. Milestone 3's
-training pipeline is built and tested on CPU with tiny random weights, so no model has been trained
-for real yet.
+*CatalogBench: share of 92 shopping tasks solved on each catalog over three rounds. Whiskers are
+95% intervals over source products; dots are single rounds.*
 
-## Running it
+## At a glance
 
-You need [uv](https://docs.astral.sh/uv/) and [rustup](https://rustup.rs), which installs the Rust
-version pinned in `rust-toolchain.toml`. Every input is pinned to an exact version and checksum.
+| Measure | Result |
+| --- | --- |
+| Enriching the 2,000 products | Sonnet: $13.27 in API calls. Taxon: no API cost, 2.5 hours on one M5 Max |
+| Tasks solved on Taxon's catalog | 93.8% [87.3, 98.9] |
+| Tasks solved on the raw catalog | 90.2% [81.7, 97.0] |
+| Tasks solved on Sonnet's catalog | 89.5% [80.4, 97.7] |
+| Taxon minus raw | 3.6 points [-2.5, 11.8]: not resolved |
+| Taxon minus Sonnet | 4.3 points [-2.4, 13.1]: not resolved |
+| Exact category on 50 hand-labeled products | Taxon 48.0% [34.8, 61.5]; its training labels 52.0% [38.5, 65.2] |
+| LLM judge against hand judgments | 95.6% [85.2, 98.8] agreement on 45 pairs |
+
+Brackets are 95% intervals. With 92 tasks from 41 products and 50 hand-labeled products, a
+difference of a few points does not resolve, and the README says so rather than ranking.
+
+## Overview
+
+Taxon fine-tunes Qwen3.5-2B, a vision-language model small enough to run on a laptop, to classify
+products into Shopify's open product taxonomy and extract their attributes. Its training labels
+come from two LLM annotators and an arbitrator, and it is checked against 50 products labeled by
+hand. CatalogBench then gives the same shopping agent three versions of a 2,000-product catalog,
+raw, enriched by `claude-sonnet-5-5` and enriched by Taxon, and measures how often it finds a
+product that meets every requirement. Only the catalog changes between conditions.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  listings[Amazon listings] --> pipeline[Labeling pipeline<br/>two annotators, one arbitrator]
+  shortlist[TF-IDF shortlist<br/>top 50 paths] --> pipeline
+  pipeline --> model[Qwen3.5-2B + LoRA<br/>picks from the shortlist]
+  shortlist --> model
+  listings --> raw[Raw catalog]
+  listings --> sonnet[Sonnet catalog]
+  model --> taxon[Taxon catalog]
+  raw --> engine[Rust search engine<br/>behind MCP]
+  sonnet --> engine
+  taxon --> engine
+  engine --> agent[Shopping agent<br/>claude-haiku-5-5]
+  agent --> judging[Judge and hand checks]
+  judging --> score[CatalogBench score]
+```
+
+| Component | Technology | Why |
+| --- | --- | --- |
+| Label space | Shopify's open product taxonomy, pinned release | Real merchants use it, and every path and attribute value can be checked |
+| Shortlist | TF-IDF and logistic regression (scikit-learn) | Cheap and local; it narrows 64,292 paths to 50 candidates |
+| Training labels | `claude-haiku-5-5` and `gpt-6-luna` annotators, `claude-sonnet-5-5` arbitrator | Two vendors err differently; the arbitrator is paid only on disagreement |
+| Model | Qwen3.5-2B with LoRA (PyTorch, Transformers, PEFT) | Small enough to fine-tune and run on one laptop |
+| Decoding | Token trie over taxonomy paths | Every answer is a real path or "none" |
+| Reinforcement learning | GRPO (TRL) | Rewards computed from the taxonomy, with no reward model; built and tested, see Limitations |
+| Search | Rust and tantivy, served over MCP | One tool schema for every catalog, so the data is the only difference |
+| Agent | `claude-haiku-5-5` | Cheap enough for three rounds of every task on every catalog |
+| Judge | `gpt-6-luna` | Not Claude, so it cannot share the arbitrator's or the agent's leanings |
+
+## Quick start
+
+You need [uv](https://docs.astral.sh/uv/) and [rustup](https://rustup.rs). Every input is pinned to
+an exact version and checksum.
 
 ```bash
 make setup
@@ -26,446 +77,127 @@ make test
 make reproduce
 ```
 
-`make test` runs offline. `make reproduce` downloads about 115 MB, rebuilds every number below
-into `results/`, and takes a few minutes on a CPU. It never calls a paid API and never reads a key.
-
-## Labeling
-
-Copy `.env.example` to `.env` and fill in the Anthropic and OpenAI keys. Each of two annotators
-picks from a shortlist of up to 50 paths or says none, and only a none starts a walk down the tree.
-A label is accepted when both annotators give the same answer. A stronger model settles every
-disagreement, and every product only one annotator answered, or abstains. Every response is cached
-on disk, and hard caps of $20 for Anthropic and $3 for OpenAI stop a run before they are passed.
-
-There are two annotators, not three, to keep the cost down: a third vendor means a third bill, and
-the arbitrator already covers what a third vote would decide. The price is that every disagreement
-goes to the arbitrator, with no majority vote to fall back on. The labeler takes any number of
-annotators, and the Gemini client is kept, unused, so a third can be added back.
-
-| Measure | Result, with 95% interval |
-| --- | --- |
-| Products where both annotators gave the same category (of 2,000) | 75.0% [73.1, 76.9] |
-| Products sent to the arbitrator (of 2,000) | 24.9% [23.1, 26.9] |
-| Arbitrator accuracy on disputed products, against the hand labels | 57.1% [25.0, 84.2], 4 of 7 |
-
-The first two come from the agreement report of the 2,000-product run (`results/labeling.json`).
-The third is the `arbitration` entry of `results/gold_eval.json`: only 7 of the 50 hand-labeled
-products were disputed, so it says little. On those 7 the arbitrator chose the same category as
-`gpt-6-luna` every time.
-
-| Role | Model |
-| --- | --- |
-| Annotators | `claude-haiku-5-5`, `gpt-6-luna` |
-| Arbitrator | `claude-sonnet-5-5` |
-
-```bash
-make label-fake
-make label-dry-run
-make label-first
-make label-gold-pool
-```
-
-`make label-fake` runs the flow against in-memory vendors, with no keys and no spending. The others
-spend money. The dry run prints the measured cost per vendor from 100 products, and later stages
-refuse to start without it. `make label-first` labels 2,000 products. Whether to label more is
-decided from the learning curve at milestone 3. The gold-pool stage exists only to score the
-pipeline against hand labels, and its output never reaches training.
-
-Attributes come from a separate second pass, never from the category calls. Once a product's
-category is settled, by agreement or by the arbitrator, one cheap annotator with the image fills in
-that category's attributes in one call. Value lists are too long to send (color alone allows over
-22,000 values), so there are two versions:
-
-- **Exact:** the model names each value, and only answers that match an allowed value exactly are
-  kept.
-- **Shortlist:** for each attribute, the 20 allowed values closest to the listing's text, by
-  character n-grams, are listed, and the model picks one or none. So "navy blue" can still reach
-  "Navy".
-
-Both count answers that named no allowed value. The dry run prices both, and the gold-pool stage
-runs both so each can be scored against hand-labeled attributes. `make label-attributes` then runs
-only the version that scored better. Category responses are cached,
-so adding the pass later pays only for the new calls. `make label-first` stays category-only.
-
-Hand labels and paid responses are not in git. This zips them, along with anything listed in
-`.git/info/exclude`, into iCloud Drive. Set `BACKUP_DIR` to use another folder. Keys are never
-included.
-
-```bash
-make backup
-```
-
-## Gold set
-
-```bash
-make gold
-make gold TARGET=500
-```
-
-This opens a local labeling page with keyboard shortcuts, a search box over every category path, and
-the baseline's top 5 suggestions. It cannot see annotator or arbitrator output. Labels are kept in
-`data/gold/`, which `make clean` leaves alone.
-
-The pool of 500 products is set aside before any training and never overlaps it. The first
-50, the verified set, cover all 28 domains, one or two products each.
-
-## Benchmark tasks
-
-```bash
-make tasks-draft
-make tasks-review
-make tasks-check
-```
-
-Constraints and acceptable products come from hand labels and listing prices only. Each request,
-in a shopper's words, is drafted by `gpt-6-luna` from the requirements alone, never a product, and
-then read, edited where needed and approved by hand, along with the acceptable products. The drafter
-is not Claude, because the agent and the frontier-enriched catalog both are. Each task records
-whether its request was drafted and whether it was rewritten. A request that quotes a taxonomy path
-or a multi-word category name is held back until it is reworded. Drafting 100 requests costs about
-a cent; `FAKE=1` drafts plain stand-ins for free.
-
-### Judging products outside the gold set
-
-Agents can return correct products that have no hand label. Those are judged rather than left out,
-with pooled judging: every non-gold product any condition returns for a task is collected once, and
-checked against the task's constraints. Price is checked in code. Category and attribute
-constraints go to an LLM judge that sees only the raw listing and image, never a catalog's
-enrichment, so no condition is judged on its own data. The judge is `gpt-6-luna`, not Claude:
-the arbitrator is Claude, and a judge from the same family could favor the Taxon catalog.
-
-```bash
-make judge-price
-make judge-sample
-make judge-review
-make judge-agreement
-make judge-pool
-```
-
-The judge is used only if it agrees with hand judgments on a seeded sample of 50 pairs: at least
-90%, with no more than 5 of them unsure. Agreement is also reported per condition. Every pair the
-judge is unsure of goes to hand review, and scoring waits for them. `make judge-price` estimates the
-cost before anything is sent, and the other commands spend within the same caps as labeling.
-
-## Catalog search
-
-A Rust engine on tantivy, behind a local MCP server that exposes one tool, `search_catalog`. It takes
-keywords plus optional category, attribute and price filters. The tool has the same schema on every
-catalog, so the data is the only thing that changes between benchmark conditions.
-
-```bash
-make search-index
-make search REQUEST='{"query": "red chef knife", "max_price": 50}'
-make search-serve
-```
-
-The raw catalog holds listings without Amazon's category fields. Two choices keep the comparison
-fair, and both make the raw baseline harder to beat:
-
-- A category or attribute filter on the raw catalog is not applied. It is named in `ignored_filters`,
-  and keyword results still come back. Returning nothing instead would cost the raw condition an extra
-  tool call on every task.
-- The price filter works on the raw catalog, because price is part of the listing.
-
-An enriched catalog is the same listings plus `category` and `attributes`, keeping only values the
-taxonomy allows:
-
-```bash
-make search-index CATALOG=model ENRICHMENTS=enrichments.jsonl
-make search-serve CATALOG=model
-```
-
-Every benchmark catalog holds the same 2,000 products: all 500 gold-queue products plus 1,500
-distractors drawn with a fixed seed. Distractors never come from the products the model is trained
-on, so no condition shops listings Taxon has already seen with their labels.
-
-## Frontier enrichment
-
-The benchmark's middle condition is the same 2,000 listings enriched by `claude-sonnet-5-5` alone,
-with no fine-tuning. It goes through the same prompts as the labeling annotators (pick from the
-shortlist, or walk down the tree) and the same attribute pass, in the version that scored better
-on the hand labels, so the model is the only difference from the Taxon catalog. Its labels for the
-gold products double as the zero-shot baseline of the classifier ladder.
-
-```bash
-make enrich-price
-make enrich
-make search-index CATALOG=sonnet ENRICHMENTS=data/labeling/enrichments_sonnet.jsonl
-```
-
-The Taxon catalog comes from the trained model on this machine, in two passes like Sonnet's: the
-category alone, decoded through the token trie so it is always a real path, then that category's
-attributes, keeping only allowed values. It costs no API money; the report gives the local hours a
-million products would take, with the hardware.
-
-```bash
-make enrich-taxon RUN=qwen-lora-grpo
-make search-index CATALOG=taxon ENRICHMENTS=data/rl/qwen-lora-grpo/enrichments_taxon.jsonl
-```
-
-`make enrich-price` spends nothing: it counts the input tokens of a sample's real requests, image
-included, with Anthropic's free counting endpoint, and takes walking rates from the dry run.
-`make enrich` waits for the labeling run, its scoring on the gold set, and a price that fits what
-is left under the cap.
-
-## Shopping agent
-
-One agent shops each catalog: `claude-haiku-5-5` with a fixed prompt, the `search_catalog` tool and
-a `submit_products` tool for its answer. Only the catalog behind the search tool changes between
-conditions. Haiku takes no temperature setting, so thinking is off, effort is low, and each
-condition runs three times so the spread between runs is measured. Each run may make at most 8
-model calls. Search results reach the agent as merchant data, and the prompt says never to follow
-instructions inside them.
-
-```bash
-make shop-price
-make shop CONDITION=raw FAKE=1
-make shop CONDITION=raw
-```
-
-`make shop-price` prices the runs from the real tool schema and the real size of search replies,
-spending nothing, and says how many runs per catalog the remaining Anthropic budget covers: three
-if they fit, otherwise two, never more than the cap. `FAKE=1` runs a scripted model against the
-real engine. A real run reserves each call's worst-case cost against the cap before sending it,
-logs every finished run with its transcript, and picks up where it stopped. Runs go one round at a
-time across the catalogs (`RUNS=1` on each, then `RUNS=2`), so a stop never leaves one catalog
-with more runs than another. The first round is 100 tasks; all 300 run only if budget remains.
-
-`make bench-score` turns the logged runs into the benchmark report: for each catalog, task success
-(the first product returned meets every requirement), precision of everything returned, empty
-answers, searches, model calls, tokens and dollars per task, each as a mean with its spread across
-runs and a 95% interval over tasks, and the paired difference in success against the raw catalog
-with a 95% interval. The 100 tasks come from 50 hand-labeled products, about two per product, and
-two tasks from one product are not independent, so every interval resamples source products
-rather than tasks (a cluster bootstrap). It also gives each catalog's enrichment cost per million
-products. It refuses while any catalog is missing runs or any returned product is unjudged or
-unresolved.
-
-Every number measured on the gold set comes with a 95% interval: a Wilson interval for a share of
-products, a bootstrap one for macro averages and latencies, and a paired bootstrap for the
-difference between two systems on the same products. With 50 products, an accuracy near 70% has an
-interval about 13 points either side, so differences smaller than about 15 points are reported
-as unresolved rather than ranked.
-
-Paid steps share the $20 Anthropic cap and run in order of importance: the labeling run, scoring
-it on the gold set, Sonnet's enrichment, then the agent runs, re-priced from what has actually been
-spent.
-
-## Fine-tuning
-
-Each training example asks for a random subset of a product's fields, so the model learns to return
-whatever is requested. Sometimes that includes an attribute the category cannot have, whose answer is
-null. Two metrics check this, and neither needs labels:
-
-- **Field compliance:** how often the model outputs only the requested fields.
-- **Field invariance:** how often a field's answer stays the same when the rest of the requested schema
-  changes.
-
-```bash
-make train-tiny
-make train-gpu RUN=name PRODUCTS=2000 STEPS=2000
-```
-
-`make train-tiny` runs on CPU with tiny random weights and provisional labels. It shows the pipeline
-works, and its numbers are not results. `make train-gpu` fine-tunes the real model with LoRA on a GPU,
-Apple's through MPS or NVIDIA's through CUDA, and refuses provisional labels. Accuracy is only ever computed against hand labels, with
-`python -m taxon.training evaluate --on gold`.
-
-## Reinforcement learning
-
-GRPO with TRL follows fine-tuning, starting from the fine-tuned adapter. Its rewards are computed
-exactly from the taxonomy, with no reward model:
-
-- **Field compliance:** the reply holds exactly the requested fields.
-- **Valid node:** the category is a real taxonomy path.
-- **Path match:** credit for each level shared with the label, weighted by depth, so deep levels
-  count most. Going past the labeled path costs too.
-- **Allowed values:** attribute values are ones the category allows.
-- **Depth penalty:** stopping above the labeled depth costs extra.
-
-Depth weighting and the penalty together keep the model from retreating to shallow, safe
-categories: stopping at the top level earns nothing net. Each run also plots predicted against
-labeled depth over training.
-
-Trie-constrained decoding makes every category valid by construction. When category is requested,
-a logits processor opens the reply with it, then allows only tokens that continue a real taxonomy
-path, and lets the value close only where a path ends.
-
-```bash
-make rl-tiny
-make rl-gpu RUN=name PRODUCTS=2000 STEPS=500
-```
-
-`make rl-tiny` runs on CPU with tiny random weights and provisional labels, then compares free and
-constrained decoding on validity and latency. Its numbers are not results. `make rl-gpu` uses the
-real model on a GPU and refuses provisional labels. Rollouts use vLLM on NVIDIA and plain generation
-on Apple, where vLLM does not run.
-
-### Hardware
-
-Training runs on an Apple M5 Max through PyTorch's MPS backend, in BF16. `make measure` times a few
-real fine-tuning and GRPO steps there and sizes overnight runs from them. Every result file records
-the machine and device it came from. The quantization study needs an NVIDIA GPU and runs later.
-
-## Quantization
-
-The final model at three precisions, on this Mac. The trained adapters are merged into the base
-weights and MLX converts the result to bfloat16, 8-bit and 4-bit affine weight quantization (groups
-of 64). MLX leaves some layers, such as the vision tower, at full precision, so the averages are
-about 9.6 and 6.2 bits per weight. Each version answers the gold products the same way: category
-alone, greedy, through the same token trie, one at a time after one untimed warm-up reply. The
-report gives accuracy per taxonomy level, p50 and p95 latency, throughput, size, peak memory and
-the local hours a million products would take. FP8 needs an NVIDIA GPU and is not measured.
-
-```bash
-make quant-prepare QUANT_RUN=data/rl/qwen-lora-grpo
-make quant
-```
+`make test` runs offline. `make reproduce` downloads about 115 MB, runs every test, and rebuilds
+every number here into `results/` in a few minutes on a CPU, without calling a paid API. Numbers
+that came from paid model calls or GPU runs are rebuilt from the outputs saved under `data/`,
+which stay out of git apart from the 50 hand labels; without them, it says which steps it skipped.
+How each part works, with its commands and the detailed results, is in
+[docs/DETAILS.md](docs/DETAILS.md).
 
 ## Results
 
-### Label space
+### CatalogBench
 
-Shopify taxonomy release 2026-10: 64,292 categories, of which 50,427 are leaves, across
-26 verticals, with 12,334 attributes.
+**Taxon's catalog costs nothing in API calls, and no agent measure tells it apart from Sonnet's.**
+Enriching the 2,000 products cost $13.27 in API calls with `claude-sonnet-5-5` and nothing with
+Taxon, which ran locally for 2.5 hours on one M5 Max. On tasks solved, the interval rules out
+Taxon's catalog being more than 2.4 points worse than Sonnet's.
 
-### Token trie
+**The benchmark is at its ceiling.** The raw catalog already solves 90.2% of tasks, so neither
+enriched catalog is resolved as better than raw: Taxon's is 3.6 points [-2.5, 11.8] ahead.
 
-Every category path, internal nodes included, as token sequences for Qwen/Qwen3.5-2B. A walk through the
-trie accepts exactly the taxonomy, and each path decodes back to its original text. Qwen3.5-4B shares
-this vocabulary.
+92 hand-checked tasks from 41 hand-labeled products, each run three times on each catalog by
+`claude-haiku-5-5`. A task is solved when the first product returned meets every requirement.
+Intervals resample source products. Differences are paired by task, in percentage points for the
+first three rows.
 
-| States | Mean tokens per path | Longest path | Widest branch |
-| --- | --- | --- | --- |
-| 272,297 | 25.1 | 67 | 68 |
-
-### Product sample
-
-10,000 products from Amazon Reviews 2023 item metadata, split evenly across 28 domains, with
-duplicates removed by id and by normalized title. Each has a title and an image.
-
-### Shortlists
-
-Share of 4,874 products whose provisional label is in the list. Close means an ancestor or
-descendant of the label is in it.
-
-| Method | Exact, top 30 | Exact, top 50 | Close, top 50 |
-| --- | --- | --- | --- |
-| TF-IDF similarity alone | 35.2% | 40.0% | 75.5% |
-| Similarity, classifier and ancestors | 89.3% | 91.8% | 98.2% |
-
-**The second row is flattering.** Its classifier learned from the same provisional labels it is scored
-against, and knows only their categories. Recall on the gold set will be the real figure.
-
-### Training labels against the hand labels
-
-The fine-tuned model learns from the labeling pipeline's categories, so their accuracy bounds what
-it can be taught. On the 50 hand-labeled products (Wilson 95% intervals):
-
-| Measure | Pipeline labels |
-| --- | --- |
-| Exact category | 52.0% [38.5, 65.2] |
-| Right at the top level | 94.0% [83.8, 97.9] |
-
-| Level | Gold support | Precision | Recall |
-| --- | --- | --- | --- |
-| 1 | 50 | 94.0% [83.8, 97.9] | 94.0% [83.8, 97.9] |
-| 2 | 49 | 92.0% [81.2, 96.8] | 93.9% [83.5, 97.9] |
-| 3 | 46 | 88.6% [76.0, 95.0] | 84.8% [71.8, 92.4] |
-| 4 | 41 | 71.4% [56.4, 82.8] | 73.2% [58.1, 84.3] |
-| 5 | 24 | 65.2% [44.9, 81.2] | 62.5% [42.7, 78.8] |
-
-**The training labels are noisy at the deepest levels.** They almost always have the right
-department and usually the right aisle, but about half name the exact leaf wrong. Of the 24
-misses, 17 are on the right path at the wrong depth (10 too deep, 7 too shallow) and 7 take a
-different branch, 3 of them from the top. A model trained on them is taught that noise too. Levels below 5 have fewer than 10 products each
-and are left out.
-
-### Does training beat its labels?
-
-Each trained model is asked for the category alone of the same 50 hand-labeled products, greedy,
-once free and once constrained to real taxonomy paths by the token trie (`make ladder`, then
-`make reproduce`). The difference against the pipeline labels is paired over products.
-
-| Model | Decoding | Exact category | Top level | Invalid paths | Minus pipeline labels |
+| Measure | Raw | Sonnet | Taxon | Taxon minus raw | Taxon minus Sonnet |
 | --- | --- | --- | --- | --- | --- |
-| Pipeline labels (the training data) | | 52.0% [38.5, 65.2] | 94.0% [83.8, 97.9] | 0.0% | |
-| Fine-tuned | free | 12.0% [5.6, 23.8] | 90.0% [78.6, 95.7] | 56.0% [42.3, 68.8] | -40.0 [-58.0, -22.0] |
-| Fine-tuned | constrained | 20.0% [11.2, 33.0] | 90.0% [78.6, 95.7] | 0.0% [0.0, 7.1] | -32.0 [-50.0, -14.0] |
+| Tasks solved | 90.2% [81.7, 97.0] | 89.5% [80.4, 97.7] | 93.8% [87.3, 98.9] | 3.6 [-2.5, 11.8] | 4.3 [-2.4, 13.1] |
+| Precision | 95.9% [92.5, 98.3] | 98.2% [96.4, 99.6] | 97.3% [95.0, 99.1] | 0.3 [-1.7, 2.0] | -0.6 [-2.1, 0.4] |
+| "No product matches" answers | 8.7% [2.8, 16.7] | 9.8% [2.2, 18.7] | 6.2% [1.1, 12.7] | -2.5 [-11.1, 4.4] | -3.6 [-11.8, 2.6] |
+| Searches per task | 2.66 [2.43, 2.88] | 2.60 [2.37, 2.83] | 2.59 [2.38, 2.79] | -0.07 [-0.24, 0.09] | -0.01 [-0.17, 0.14] |
+| Model calls per task | 2.54 [2.44, 2.63] | 2.59 [2.48, 2.69] | 2.57 [2.46, 2.68] | 0.03 [-0.06, 0.13] | -0.02 [-0.10, 0.07] |
+| Tokens per task | 36,153 [31,572, 41,111] | 37,186 [31,998, 42,415] | 38,514 [34,236, 43,110] | 2,361 [-1,559, 6,067] | 1,328 [-1,747, 4,445] |
+| Agent cost per 1,000 tasks | $2.95 [2.59, 3.33] | $2.78 [2.39, 3.19] | $2.92 [2.58, 3.29] | -0.03 [-0.35, 0.28] | 0.14 [-0.10, 0.38] |
+| Enriching the 2,000 products | none | $13.27 in API calls | no API cost; 2.5 hours on one M5 Max | | |
 
-**Fine-tuning does not beat the labels it learned from: it is 32 points worse on exact category,
-and the interval excludes zero.** It learns the department nearly as well as the labels (90%
-against 94%), but below that it mostly picks a different branch: 26 of its 40 constrained misses
-take a different branch (21 under the right department, 5 from the top), against 7 of the labels'
-24. Free decoding
-invents a path that does not exist more than half the time; constraining it to the trie removes
-those and adds 8 points. GRPO, on top of the fine-tuned model, is next on the ladder.
+- The one invented product ID came from a raw-catalog run, third of the ten products it returned;
+  it counts as wrong.
+- Taxon's catalog gave no category to 112 of the 2,000 products: its model answered "none" from
+  its shortlist. They stay in the catalog as raw listings, so keyword search still finds them but
+  a category or attribute filter never returns them. They include every gold product of 3 tasks.
 
-The keyword baseline on the same products: 8.0% [3.2, 18.8] exact when trained on the silver
-labels, 12.0% [5.6, 23.8] when trained on the pipeline labels. The paired difference, +4.0 points
-[−6.0, +16.0], is too small to call. The category shortlist given to the annotators holds the exact
-hand label for 76.0% of products in its top 50, and a close one (an ancestor or descendant) for
-96.0%.
+#### Exploratory: does the title already name what the task asks for?
 
-Attributes, on 66 hand-labeled values across 39 products, with intervals that resample products:
+This split comes from task metadata alone, fixed before looking at any result by group: a task
+counts as named when the title of the product it was drafted from names its required category or
+one of its required attribute values. It was not planned before the runs, and no difference in it
+resolves.
 
-| Attribute pass | Values matched |
-| --- | --- |
-| Shortlist of allowed values | 53.0% [39.7, 66.1] |
-| Exact attribute names only | 31.8% [17.7, 45.6] |
-| Only what the listing's details state | 18.2% [8.7, 28.1] |
+| Tasks | Count | Raw | Sonnet | Taxon | Taxon minus raw | Taxon minus Sonnet |
+| --- | --- | --- | --- | --- | --- | --- |
+| Title names a requirement | 41 | 95.9% [89.7, 100.0] | 97.6% [91.9, 100.0] | 99.2% [97.5, 100.0] | 3.3 [-0.9, 9.5] | 1.6 [-2.2, 7.5] |
+| Title names none | 51 | 85.6% [75.0, 94.9] | 83.0% [69.8, 95.7] | 89.5% [78.8, 99.3] | 3.9 [-3.8, 14.3] | 6.5 [-3.8, 18.5] |
 
-The shortlist version beats the exact one by 21.2 points [3.4, 41.5] on the same products, so it
-is the version run on the 2,000 training products.
+Tasks whose requirements the title does not name are harder on every catalog, and Taxon's catalog
+gains about as much on both.
 
-### Baseline
+### The judge
 
-TF-IDF plus one-vs-rest logistic regression on title, features, description, and details.
+Returned products outside a task's hand labels were checked by `gpt-6-luna`, used only once it
+agreed with hand judgments on a seeded sample: at least 90%, on at least 45 pairs it answered. It
+was unsure of 6 of the first 50 pairs, one more than that allows, so the sample grew to 51 in the
+same seeded order. It agreed on 43 of the 45 it answered, **95.6% [85.2, 98.8]** (95.5% on the
+first 50), with Cohen's kappa **0.81 [0.46, 1.00]**. Both disagreements were lenient, accepting a
+product the hand judgment rejected, and both were on products all three catalogs returned. The 31
+of 238 pooled pairs it was unsure of were judged by hand.
 
-**These are provisional numbers against silver labels, not a measure of real accuracy.** Labels
-come from matching Amazon's own category breadcrumbs onto the taxonomy, so scores show agreement
-with that mapping. They will be replaced by evaluation on the hand-labeled gold set.
+### Category accuracy on the hand labels
 
-Silver labels cover 5,126 of 10,000 products (51.3%) and 1,046 distinct paths. They
-cover nothing in All_Beauty, Amazon_Fashion, CDs_and_Vinyl, Health_and_Personal_Care.
+| Model | Exact category | Top level | Minus its training labels |
+| --- | --- | --- | --- |
+| Training labels (two annotators and an arbitrator) | 52.0% [38.5, 65.2] | 94.0% [83.8, 97.9] | |
+| Fine-tuned to write the path, constrained to real paths | 20.0% [11.2, 33.0] | 90.0% [78.6, 95.7] | -32.0 [-50.0, -14.0] |
+| Fine-tuned to pick from a 50-path shortlist (Taxon) | 48.0% [34.8, 61.5] | 88.0% [76.2, 94.4] | -4.0 [-14.0, 6.0] |
 
-Test set of 523 products, regularization chosen on a separate validation split:
+Picking from a shortlist matches the training labels with one local model call, where the labels
+took two paid annotators and an arbitrator; writing a path from all 64,292 categories does not.
+**The shortlist caps it at 76%**: the exact hand label is among the 50 candidates for 38 of the 50
+products.
 
-| Model | Exact leaf accuracy |
-| --- | --- |
-| TF-IDF + logistic regression | 48.9% |
-| Always predict the most common label | 4.6% |
+### How the hand labels were made
 
-11.9% of test labels never appear in training, so a flat classifier cannot predict them.
+The 50 hand-labeled products are drawn before any training from a held-out pool, and cover all 28
+product domains. They were labeled on a local page that shows the listing, a search over every
+category path and a keyword baseline's top 5 guesses, but never the annotators' answers.
 
-| Level | Gold support | Micro precision | Micro recall | Macro precision | Macro recall |
-| --- | --- | --- | --- | --- | --- |
-| 1 | 523 | 75.7% | 75.7% | 72.5% | 60.5% |
-| 2 | 477 | 72.0% | 67.5% | 46.6% | 36.8% |
-| 3 | 352 | 66.1% | 46.0% | 30.4% | 26.9% |
-| 4 | 240 | 62.2% | 32.9% | 23.6% | 20.6% |
-| 5 | 139 | 69.8% | 26.6% | 20.0% | 19.0% |
-| 6 | 47 | 70.8% | 36.2% | 29.9% | 28.9% |
-| 7 | 9 | 100.0% | 66.7% | 66.7% | 66.7% |
-| 8 | 4 | 100.0% | 50.0% | 50.0% | 50.0% |
+![The gold labeling page: a wooden dog crate end table on the left, with its title and features; on the right, the keyword baseline's five suggestions and a category search for "crate" listing taxonomy paths such as Pet Carriers & Crates and Furniture-Style Crates.](docs/images/gold-labeling.png)
 
-Validation accuracy is still rising with more training data:
+*The labeling page on a real product from the pool, with a category search under way.*
 
-| Training examples | Exact leaf accuracy |
-| --- | --- |
-| 972 | 35.9% |
-| 1,945 | 44.1% |
-| 3,891 | 48.3% |
+## Limitations
 
-### Catalog search
+- **Unsupported attributes steer the agent.** Taxon's catalog tags Sunflower Botanicals Wormseed
+  Extract as made in the United States, though its listing never says where it is made. On two
+  "made in the United States" tasks the agent found it through that tag and returned it in 4 runs;
+  by hand it fails both. It was never returned first, so it lowers precision, not task success.
+  How often each catalog states more than its listings:
 
-Searching for a product's exact title over MCP, on the raw catalog of 10,000 products. This checks that
-the engine and catalog work together, not how well an agent shops.
+  | Check | Taxon | Sonnet |
+  | --- | --- | --- |
+  | Specific countries of origin that the listing text never names | 18 of 32, 56.2% [39.3, 71.8] | 4 of 9, 44.4% [18.9, 73.3] |
+  | Values on verified products where the hand label is blank | 191 of 244, 78.3% [71.9, 83.5] | 120 of 168, 71.4% [64.1, 77.8] |
+  | Values on verified products that contradict the hand label | 9 of 53, 17.0% [9.2, 29.2] | 9 of 48, 18.8% [10.2, 31.9] |
+  | Values that are the catch-all "Other" | 3,908 of 14,733, 26.5% | 133 of 7,300, 1.8% |
 
-| Products searched | Found first | Found in top 10 |
-| --- | --- | --- |
-| 500 | 99.6% | 99.8% |
+  The hand-label rows are upper bounds, since attributes on the labeling page were optional.
+  Details: [docs/DETAILS.md](docs/DETAILS.md#unsupported-attribute-values).
+- **The benchmark is near its ceiling.** The raw catalog already solves 90% of tasks, and with 92
+  tasks the difference between Taxon's catalog and the raw one spans -2.5 to 11.8 points.
+- **Small hand-labeled sets.** 50 products give intervals of about 13 points either side at 70%
+  accuracy. 8 of the 100 drafted tasks were left unchecked and never run.
+- **GRPO and quantization were not run on the final model.** Both are built and tested; the short
+  GRPO run stopped before its first checkpoint when it competed for the GPU, and FP8 needs an
+  NVIDIA GPU.
 
-## Data and model licences
+## How it's tested
 
-Amazon Reviews 2023 comes from the McAuley Lab. Qwen3.5-2B and Qwen3.5-4B are under Apache-2.0.
+`make reproduce` runs 909 Python tests, 41 of them on the real data and results, and 30 Rust
+tests of the search engine. Paid APIs are replaced by fakes in tests, and the real-data tests check
+that every number in this README and in [docs/DETAILS.md](docs/DETAILS.md) matches `results/`.
+
+## License
+
+The code is under the MIT license: see [LICENSE](LICENSE). Amazon Reviews 2023 comes from the
+McAuley Lab and keeps its own terms. Qwen3.5-2B and Qwen3.5-4B are under Apache-2.0.
