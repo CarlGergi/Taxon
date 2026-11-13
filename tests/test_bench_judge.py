@@ -118,9 +118,40 @@ def test_the_pool_holds_each_non_gold_pair_once_with_its_conditions():
     assert pairs[0]["conditions"] == ["model", "raw"]
 
 
+def test_made_up_ids_are_left_out_of_the_pool():
+    pairs = pool([TASK, PRICE_ONLY], runs(), {"G1", "G2"}, known_ids={"X", "Y"})
+    assert [(p["task"], p["asin"]) for p in pairs] == [("t1", "X"), ("t1", "Y"), ("t2", "Y")]
+
+
 def test_a_run_for_an_unknown_task_is_refused():
     with pytest.raises(ValueError, match="unknown task"):
         pool([TASK], [{"condition": "raw", "run": 1, "task": "nope", "returned": []}], set())
+
+
+def _verdicts(rows, unsure):
+    return [
+        {
+            "task": p["task"],
+            "asin": p["asin"],
+            "verdict": UNSURE if i < unsure else MEETS,
+            "by": "judge",
+        }
+        for i, p in enumerate(rows)
+    ]
+
+
+def test_the_sample_grows_in_order_until_the_judge_has_answered_enough():
+    pairs = [{"task": "t1", "asin": f"P{i:02}"} for i in range(60)]
+    base = validation_sample(pairs, 7)
+    assert len(base) == 50
+    assert validation_sample(pairs, 7, _verdicts(base, 50 - MIN_ANSWERED)) == base
+    grown = validation_sample(pairs, 7, _verdicts(base, 51 - MIN_ANSWERED))
+    assert len(grown) == 51 and grown == validation_sample(pairs, 7, n=51)
+    extra = {"task": "t1", "asin": grown[50]["asin"], "by": "judge"}
+    answered = _verdicts(base, 51 - MIN_ANSWERED) + [{**extra, "verdict": FAILS}]
+    assert validation_sample(pairs, 7, answered) == grown
+    unsure = _verdicts(base, 51 - MIN_ANSWERED) + [{**extra, "verdict": UNSURE}]
+    assert len(validation_sample(pairs, 7, unsure)) == 52
 
 
 def test_the_validation_sample_is_seeded_and_order_independent():
@@ -173,7 +204,9 @@ def test_a_failed_judge_call_is_unsure(tmp_path):
 
 def test_hand_review_never_shows_the_judge_and_records_answers():
     pairs = [{"task": "t1", "asin": a} for a in "ABCD"]
-    products = {a: product(a) for a in "ABCD"}
+    products = {
+        a: product(a, features=["Bright canvas"], categories=["Amazon Totes"]) for a in "ABCD"
+    }
     shown = []
     answers = iter(["y", "n", "s", "q"])
     new = hand_review(
@@ -183,6 +216,26 @@ def test_hand_review_never_shows_the_judge_and_records_answers():
     text = "\n".join(shown)
     assert "judge" not in text.lower() and "verdict" not in text.lower()
     assert "must: color is Red" in text
+    assert "  - Bright canvas" in text and "description: A red bag" in text
+    assert "Amazon Totes" not in text
+
+
+def test_hand_review_asks_each_pair_once_and_keeps_only_its_own_fields():
+    asked = []
+    pair = {"task": "t1", "asin": "A", "conditions": ["raw"]}
+    unsure = {**pair, "verdict": UNSURE, "by": "judge", "answers": {"r1": "unsure"}, "cost": 0.1}
+    new = hand_review(
+        [pair, unsure],
+        {"t1": TASK},
+        {"A": product("A")},
+        {},
+        lambda p: asked.append(p) or "y",
+        lambda _t: None,
+    )
+    assert len(asked) == 1
+    assert new == [
+        {"task": "t1", "asin": "A", "conditions": ["raw"], "verdict": MEETS, "by": "hand"}
+    ]
 
 
 def test_hand_review_skips_what_is_already_judged():
@@ -301,9 +354,9 @@ def bench(tmp_path, monkeypatch, taxonomy):
     }, runs_path
 
 
-def judge_cmd(bench, command, read=input):
+def judge_cmd(bench, command, read=input, extra=()):
     paths, runs_path = bench
-    return cli.main([command, "--runs", str(runs_path), "--fake"], read=read, **paths)
+    return cli.main([command, "--runs", str(runs_path), "--fake", *extra], read=read, **paths)
 
 
 def output(capsys):
@@ -361,6 +414,28 @@ def test_the_full_flow_trusts_an_agreeing_judge_then_judges_the_pool(bench, caps
     assert sum(report["verdicts"].values()) == 80
 
 
+def test_the_benchmark_report_rebuilds_the_judge_s_validation(bench, capsys, monkeypatch):
+    from taxon.bench.tasks import load_tasks
+
+    assert judge_cmd(bench, "judge-sample") == 0
+    read, write = answer_like_the_judge(bench, agree=True)
+    monkeypatch.setattr(judging, "hand_review", _with_writer(judging.hand_review, write))
+    assert judge_cmd(bench, "judge-review", read) == 0
+    paths, runs_path = bench
+    _, products, items, _ = cli._inputs(paths["labels_path"], paths["derived"])
+    report = judging.validation_report(
+        judging.Judging(paths["judging_dir"], paths["labeling_dir"]),
+        load_tasks(paths["tasks_path"]),
+        products,
+        {item.asin for item in items},
+        read_jsonl(runs_path),
+    )
+    assert report["pool"] == 80 and report["sample"] == 50
+    assert report["agreement"]["trusted"] is True
+    assert report["first_sample"] == report["agreement"]
+    assert sum(report["verdicts"].values()) == 50
+
+
 def test_a_disagreeing_judge_is_not_used(bench, capsys, monkeypatch):
     assert judge_cmd(bench, "judge-sample") == 0
     read, write = answer_like_the_judge(bench, agree=False)
@@ -373,9 +448,68 @@ def test_a_disagreeing_judge_is_not_used(bench, capsys, monkeypatch):
 
 
 def test_judging_stops_before_passing_the_cap(bench, monkeypatch):
-    monkeypatch.setattr(judging, "_remaining", lambda _space: 0.0001)
+    monkeypatch.setattr(judging, "_remaining", lambda _space, _limit=None: 0.0001)
     with pytest.raises(SystemExit, match="more than"):
         judge_cmd(bench, "judge-sample")
+
+
+def test_judge_sample_grows_the_sample_when_the_judge_is_unsure(bench, capsys, monkeypatch):
+    calls = []
+
+    def judge(pairs, tasks, products, runner, image_for):
+        first = not calls
+        calls.append(len(pairs))
+        return [
+            {
+                "task": p["task"],
+                "asin": p["asin"],
+                "verdict": UNSURE if first and i < 6 else MEETS,
+                "by": "judge",
+                "cost": 0.0,
+            }
+            for i, p in enumerate(pairs)
+        ]
+
+    monkeypatch.setattr(judging, "judge_pairs", judge)
+    assert judge_cmd(bench, "judge-sample") == 0
+    report = output(capsys)
+    assert calls == [50, 1]
+    assert report["sample"] == 51 and report["judge_answered_in_sample"] == MIN_ANSWERED
+    assert judge_cmd(bench, "judge-sample") == 0
+    assert calls == [50, 1]
+
+
+def test_direct_calls_are_priced_at_full_price(bench, capsys):
+    judge_cmd(bench, "judge-price")
+    batch = output(capsys)["validation_sample"]
+    judge_cmd(bench, "judge-price", extra=["--direct"])
+    direct = output(capsys)["validation_sample"]
+    assert direct["price_factor"] == judging.DIRECT_PRICE_FACTOR == 2.0
+    assert direct["worst_case"] == pytest.approx(2 * batch["worst_case"])
+    assert direct["estimate"] == pytest.approx(2 * batch["estimate"])
+
+
+def test_a_run_limit_refuses_what_could_pass_it(bench):
+    with pytest.raises(SystemExit, match="this run's limit"):
+        judge_cmd(bench, "judge-sample", extra=["--direct", "--limit", "0"])
+    assert not (bench[0]["judging_dir"] / "judgments.jsonl").exists()
+
+
+def test_a_direct_runner_sends_one_by_one_under_the_run_limit(tmp_path, monkeypatch):
+    seen = {}
+
+    def clients(secrets, vendors, charge=None, direct=()):
+        seen["direct"] = list(direct)
+        return {}
+
+    monkeypatch.setattr(judging, "build_clients", clients)
+    monkeypatch.setattr(judging, "load_secrets", lambda: None)
+    space = judging.Judging(tmp_path / "judging", tmp_path / "labeling")
+    runner = judging._runner(space, fake=False, direct=True, limit=0.05)
+    assert seen["direct"] == ["openai"]
+    assert runner.budget.caps["openai"] == pytest.approx(0.05)
+    judging._runner(space, fake=False)
+    assert seen["direct"] == []
 
 
 def _with_writer(review, write):

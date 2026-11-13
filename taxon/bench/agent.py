@@ -27,7 +27,7 @@ from mcp.client.stdio import stdio_client
 
 from taxon.bench import search
 from taxon.bench.tasks import Task
-from taxon.labeling.budget import CAPS, Budget, BudgetExceeded
+from taxon.labeling.budget import CAPS, Budget, BudgetExceeded, limited_caps
 from taxon.labeling.llm import ModelConfig, Usage
 from taxon.labeling.pricing import MILLION, cost_at, interactive_price_for
 from taxon.pins import DATA_DIR
@@ -319,23 +319,30 @@ async def run_condition(
     todo = [(r, t) for r, t in todo if (condition, r, t.id) not in done]
     gate = asyncio.Semaphore(concurrency)
     finished = 0
+    stopped: list[BudgetExceeded] = []
 
     async def one(run: int, task: Task) -> None:
         nonlocal finished
         async with gate:
+            if stopped:
+                return
             key = f"{condition}:{run}:{task.id}"
-            outcome = await shop(task.request, catalog, model, budget, key)
+            try:
+                outcome = await shop(task.request, catalog, model, budget, key)
+            except BudgetExceeded as error:
+                # Let runs already under way finish rather than cancel them mid-call.
+                stopped.append(error)
+                return
             log.add(outcome.record(condition, run, task.id), outcome.transcript)
             finished += 1
             if finished % 25 == 0:
                 report(f"{condition}: {finished} of {len(todo)} runs")
 
-    try:
-        async with asyncio.TaskGroup() as group:
-            for run, task in todo:
-                group.create_task(one(run, task))
-    except* BudgetExceeded as stopped:
-        raise stopped.exceptions[0] from None
+    async with asyncio.TaskGroup() as group:
+        for run, task in todo:
+            group.create_task(one(run, task))
+    if stopped:
+        raise stopped[0]
     return finished
 
 
@@ -362,31 +369,51 @@ def real_model() -> Model:
 
 
 async def _shop_condition(
-    condition: str, tasks: Sequence[Task], runs: int, index: Path, fake: bool
+    condition: str,
+    tasks: Sequence[Task],
+    runs: int,
+    index: Path,
+    fake: bool,
+    limit: float | None = None,
 ) -> dict:
     from taxon.bench.fakes import ScriptedModel, demo_reply
 
     model = ScriptedModel(demo_reply) if fake else real_model()
-    budget = Budget(ledger_path(fake), CAPS)
+    ledger = ledger_path(fake)
+    budget = Budget(ledger, limited_caps(ledger, limit))
     log = RunLog(agent_dir(fake))
+    before = len(log.rows())
+    stopped = None
     async with McpCatalog(index) as catalog:
-        new = await run_condition(condition, tasks, runs, catalog, model, budget, log)
+        # Caught inside, so the catalog's server shuts down normally.
+        try:
+            await run_condition(condition, tasks, runs, catalog, model, budget, log)
+        except BudgetExceeded as error:
+            stopped = str(error)
     rows = [r for r in log.rows() if r["condition"] == condition]
     return {
         "condition": condition,
-        "new_runs": new,
+        "new_runs": len(log.rows()) - before,
+        "stopped_at_limit": stopped,
         "runs_logged": len(rows),
         "cost_logged": sum(r["cost"] for r in rows),
         "anthropic_spent": budget.settled(AGENT.vendor),
-        "anthropic_cap": budget.caps[AGENT.vendor],
+        "anthropic_cap": CAPS[AGENT.vendor],
+        "stop_at": budget.caps[AGENT.vendor],
         "fake": fake,
     }
 
 
 def shop_condition(
-    condition: str, tasks: Sequence[Task], runs: int, index: Path, fake: bool
+    condition: str,
+    tasks: Sequence[Task],
+    runs: int,
+    index: Path,
+    fake: bool,
+    limit: float | None = None,
 ) -> dict:
-    return asyncio.run(_shop_condition(condition, tasks, runs, index, fake))
+    """Run the agent on one catalog. `limit` caps this call's spending, under the overall cap."""
+    return asyncio.run(_shop_condition(condition, tasks, runs, index, fake, limit))
 
 
 # Pricing a plan before any of it runs

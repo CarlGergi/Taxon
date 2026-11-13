@@ -3,8 +3,11 @@
 For each catalog and run: task success (the agent's first product meets every requirement),
 precision of everything it returned, how often it returned nothing, and the searches, model calls,
 tokens and dollars a task took. Across runs, the mean and the spread. Over tasks, each metric's
-mean with a 95% bootstrap interval, and against the raw catalog, the paired difference in success
-with one too.
+mean with a 95% bootstrap interval, and paired differences with one too: success against the raw
+catalog, and every metric for Taxon's catalog against the raw one and against Sonnet's.
+
+One exploratory breakdown splits the tasks by their own metadata, never by results: whether the
+title of the product a task was drafted from names any category or attribute the task requires.
 
 Tasks drafted from the same gold product share that product, so they are not independent. Every
 interval resamples source products (a cluster bootstrap), taking all of a product's tasks
@@ -18,6 +21,7 @@ unresolved, so no number rests on a guess.
 from __future__ import annotations
 
 import random
+import re
 import statistics
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -27,6 +31,9 @@ from taxon.bench.tasks import Task, fingerprint
 
 BASELINE = "raw"
 RESAMPLES = 2_000
+# Taxon's catalog against each other one, on every metric.
+PAIRS = (("taxon", "raw"), ("taxon", "sonnet"))
+_SKIP_WORDS = frozenset({"and", "or", "the", "of", "for", "with", "a", "an", "in", "to"})
 _METRICS = (
     "success",
     "precision",
@@ -114,6 +121,19 @@ def run_metrics(rows: Sequence[Mapping], accepted: Mapping[str, set[str]]) -> di
         "tokens": statistics.mean(_tokens(r) for r in rows),
         "cost": statistics.mean(r["cost"] for r in rows),
         "stopped": dict(sorted(_count(r["stopped"] for r in rows).items())),
+    }
+
+
+def answer_counts(rows: Sequence[Mapping], catalog_ids: set[str]) -> dict:
+    """Over all runs of one catalog: how often the agent said no product matches, and how many
+    product ids it returned that are not in the catalog at all."""
+    return {
+        "runs": len(rows),
+        "no_match": sum(not r["returned"] for r in rows),
+        "invented_ids": sum(a not in catalog_ids for r in rows for a in r["returned"]),
+        "runs_with_an_invented_id": sum(
+            any(a not in catalog_ids for a in r["returned"]) for r in rows
+        ),
     }
 
 
@@ -255,8 +275,12 @@ def score(
     seed: int,
     gold_ids: set[str],
     catalog_ids: set[str],
+    titles: Mapping[str, str] | None = None,
 ) -> dict:
-    """The benchmark report. Raises NotReady until every run is in and every product is judged."""
+    """The benchmark report. Raises NotReady until every run is in and every product is judged.
+
+    With the products' titles, it adds the exploratory breakdown by whether the source product's
+    title names what the task requires."""
     rows = [r for r in rows if r["condition"] in conditions]
     runs = check_complete(rows, tasks, conditions)
     accepted = acceptable_sets(tasks, rows, judged, hand, gold_ids, catalog_ids)
@@ -280,6 +304,7 @@ def score(
             "over_tasks": task_level(mine, accepted, groups, seed),
             "runs": per_run,
             "enrichment": dict(enrichment.get(condition, {})),
+            "answers": answer_counts(mine, catalog_ids),
         }
         successes[condition] = per_task_success(mine, accepted)
     if BASELINE in conditions:
@@ -287,6 +312,88 @@ def score(
             c: paired_difference(successes[c], successes[BASELINE], seed, groups=groups)
             for c in conditions
             if c != BASELINE
+        }
+    by_condition = {c: [r for r in rows if r["condition"] == c] for c in conditions}
+    report["paired"] = {
+        f"{a}_minus_{b}": {
+            metric: paired_difference(
+                per_task(by_condition[a], accepted, metric),
+                per_task(by_condition[b], accepted, metric),
+                seed,
+                groups=groups,
+            )
+            for metric in _METRICS
+        }
+        for a, b in PAIRS
+        if a in conditions and b in conditions
+    }
+    if titles is not None:
+        report["exploratory"] = title_breakdown(tasks, titles, by_condition, accepted, groups, seed)
+    return report
+
+
+def _stems(text: str) -> set[str]:
+    """Lowercase words with a plural ending cut, so "Supplements" and "supplement" meet."""
+    stems = set()
+    for word in re.findall(r"[a-z0-9]+", text.lower()):
+        if word in _SKIP_WORDS:
+            continue
+        if len(word) > 4 and word.endswith("ies"):
+            word = word[:-3] + "y"
+        elif len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+            word = word[:-1]
+        stems.add(word)
+    return stems
+
+
+def named_in_title(task: Task, title: str) -> bool | None:
+    """Whether a title names any category or attribute the task requires: the required category's
+    own name, or a required attribute value. None if the task requires neither."""
+    terms = [c.path.split(" > ")[-1] for c in task.constraints if c.kind == "category" and c.path]
+    terms += [c.value for c in task.constraints if c.kind == "attribute" and c.value]
+    if not terms:
+        return None
+    words = _stems(title)
+    return any(_stems(term) <= words for term in terms)
+
+
+def title_breakdown(
+    tasks: Sequence[Task],
+    titles: Mapping[str, str],
+    by_condition: Mapping[str, Sequence[Mapping]],
+    accepted: Mapping[str, set[str]],
+    groups: Mapping[str, str],
+    seed: int,
+) -> dict:
+    """Exploratory: success per catalog on tasks whose requirements the source product's title
+    names, and on tasks where it does not. Groups come from task metadata only."""
+    split: dict[str, list[str]] = {"named_in_title": [], "not_named_in_title": []}
+    for task in tasks:
+        named = named_in_title(task, titles.get(task.source or "", ""))
+        if named is not None:
+            split["named_in_title" if named else "not_named_in_title"].append(task.id)
+    report = {}
+    for name, ids in split.items():
+        keep = set(ids)
+        success = {
+            c: {t: v for t, v in per_task(rows, accepted).items() if t in keep}
+            for c, rows in by_condition.items()
+        }
+        report[name] = {
+            "tasks": len(ids),
+            "source_products": len({groups.get(t, t) for t in ids}),
+            "success": {
+                c: {
+                    "mean": statistics.mean(v.values()) if v else None,
+                    "ci95": cluster_interval(v, groups, seed),
+                }
+                for c, v in success.items()
+            },
+            "taxon_minus": {
+                b: paired_difference(success[a], success[b], seed, groups=groups)
+                for a, b in PAIRS
+                if a in success and b in success and success[a]
+            },
         }
     return report
 

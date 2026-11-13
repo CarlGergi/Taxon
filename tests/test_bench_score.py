@@ -9,6 +9,7 @@ from taxon.bench.judge import FAILS, MEETS, UNSURE
 from taxon.bench.score import (
     NotReady,
     acceptable_sets,
+    answer_counts,
     check_complete,
     enrichment_cost,
     outcome,
@@ -110,6 +111,16 @@ def test_run_metrics_average_over_tasks():
     assert metrics["stopped"] == {"submitted": 2}
 
 
+def test_answer_counts_give_no_match_answers_and_invented_ids():
+    rows = [row("raw", 1, "t1", []), row("raw", 1, "t2", ["G1", "MADEUP"]), row("raw", 2, "t1", [])]
+    assert answer_counts(rows, CATALOG) == {
+        "runs": 3,
+        "no_match": 2,
+        "invented_ids": 1,
+        "runs_with_an_invented_id": 1,
+    }
+
+
 def test_spread_gives_mean_sd_and_range():
     assert spread([0.5, 0.7, 0.6]) == pytest.approx(
         {"mean": 0.6, "sd": 0.1, "min": 0.5, "max": 0.7}
@@ -163,6 +174,7 @@ def test_the_full_report_scores_each_catalog_against_raw():
     assert report["catalogs"]["taxon"]["cost"]["mean"] == pytest.approx(0.0015)
     assert report["success_minus_raw"]["taxon"]["difference"] == 1.0
     assert report["catalogs"]["taxon"]["enrichment"]["local_hours_per_million_products"] == 2.0
+    assert report["catalogs"]["raw"]["answers"]["no_match"] == 2
     assert len(report["task_set_sha256"]) == 64
     json.dumps(report)
 
@@ -256,3 +268,63 @@ def test_the_report_counts_source_products_and_gives_every_metric_an_interval():
     }
     assert over["success"] == {"mean": 1.0, "ci95": [1.0, 1.0]}
     assert report["success_minus_raw"]["taxon"]["source_products"] == 1
+
+
+# Taxon's catalog against each other one, and the exploratory split
+
+
+def test_a_title_names_a_requirement_by_the_category_s_own_name_or_an_attribute_value():
+    from taxon.bench.score import named_in_title
+
+    tote = Constraint("category", path="Apparel > Bags > Totes")
+    red = Constraint("attribute", handle="color", value="Red")
+    assert named_in_title(Task("t", [tote, LIMIT], ["G1"], "a tote", True), "Canvas Tote Bag")
+    assert named_in_title(Task("t", [tote, red], ["G1"], "a red bag", True), "Bright red bag")
+    assert not named_in_title(Task("t", [tote, red], ["G1"], "a red bag", True), "Canvas carryall")
+    assert named_in_title(Task("t", [tote], ["G1"], "totes", True), "Two TOTES") is True
+    assert named_in_title(Task("t", [CHEAP], ["G1"], "anything cheap", True), "Tote") is None
+
+
+def test_taxon_is_paired_with_each_catalog_on_every_metric_and_split_by_title():
+    tote = Constraint("category", path="Apparel > Bags > Totes")
+    tasks = [
+        Task("t1", [tote, LIMIT], ["G1"], "a tote", True, source="G1"),
+        Task("t2", [tote, LIMIT], ["G2"], "a tote", True, source="G2"),
+    ]
+    rows = []
+    for run in (1, 2):
+        rows += [row("raw", run, "t1", []), row("raw", run, "t2", ["G2"], searches=4)]
+        rows += [row("sonnet", run, "t1", ["G1"]), row("sonnet", run, "t2", [])]
+        rows += [row("taxon", run, "t1", ["G1"]), row("taxon", run, "t2", ["G2"], searches=1)]
+    titles = {"G1": "Canvas tote", "G2": "Leather carryall"}
+    report = score.score(
+        tasks,
+        rows,
+        [],
+        [],
+        ["raw", "sonnet", "taxon"],
+        {},
+        seed=1,
+        gold_ids=GOLD,
+        catalog_ids=CATALOG,
+        titles=titles,
+    )
+    paired = report["paired"]
+    assert set(paired) == {"taxon_minus_raw", "taxon_minus_sonnet"}
+    assert set(paired["taxon_minus_raw"]) == {
+        "success",
+        "precision",
+        "empty_answers",
+        "searches",
+        "model_calls",
+        "tokens",
+        "cost",
+    }
+    assert paired["taxon_minus_raw"]["success"]["difference"] == 0.5
+    assert paired["taxon_minus_raw"]["searches"]["difference"] == pytest.approx(-1.5)
+    split = report["exploratory"]
+    assert split["named_in_title"]["tasks"] == 1 and split["not_named_in_title"]["tasks"] == 1
+    assert split["named_in_title"]["success"]["raw"]["mean"] == 0.0
+    assert split["named_in_title"]["taxon_minus"]["raw"]["difference"] == 1.0
+    assert split["not_named_in_title"]["taxon_minus"]["sonnet"]["difference"] == 1.0
+    json.dumps(report)

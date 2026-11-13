@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import math
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 
 from eval.metrics import bootstrap_interval, wilson
 from taxon.bench.tasks import Constraint, Task, describe, numeric_price
@@ -28,7 +28,8 @@ JUDGE = ModelConfig("openai", "gpt-6-luna", max_tokens=1_024, effort="low")
 MEETS, FAILS, UNSURE = "meets", "fails", "unsure"
 VALIDATION_SAMPLE = 50
 # The judge is trusted only if it agrees with hand judgments on at least this share of the sample
-# it answered, and answered at least MIN_ANSWERED of the 50.
+# it answered, and answered at least MIN_ANSWERED of it. When it is unsure too often for that, the
+# sample grows past 50 in the same seeded order until it has answered MIN_ANSWERED.
 AGREEMENT_BAR = 0.90
 MIN_ANSWERED = 45
 # For the estimate before anything is sent: a typical reply, and a 512-pixel image.
@@ -106,10 +107,16 @@ def parse_verdict(text: str, n: int) -> tuple[str, dict[str, str]]:
     return UNSURE, given
 
 
-def pool(tasks: Sequence[Task], runs: Iterable[Mapping], gold_ids: set[str]) -> list[dict]:
+def pool(
+    tasks: Sequence[Task],
+    runs: Iterable[Mapping],
+    gold_ids: set[str],
+    known_ids: Collection[str] | None = None,
+) -> list[dict]:
     """Each (task, non-gold product) any run returned, with the conditions that returned it.
 
-    A run row is {"condition", "run", "task", "returned": [product ids]}.
+    A run row is {"condition", "run", "task", "returned": [product ids]}. Ids outside known_ids
+    were made up by the agent: there is nothing to judge, and scoring counts them as wrong.
     """
     known = {t.id for t in tasks}
     found: dict[tuple[str, str], set[str]] = defaultdict(set)
@@ -117,7 +124,7 @@ def pool(tasks: Sequence[Task], runs: Iterable[Mapping], gold_ids: set[str]) -> 
         if row["task"] not in known:
             raise ValueError(f"a run names an unknown task: {row['task']}")
         for asin in row["returned"]:
-            if asin not in gold_ids:
+            if asin not in gold_ids and (known_ids is None or asin in known_ids):
                 found[(row["task"], asin)].add(row["condition"])
     return [
         {"task": task, "asin": asin, "conditions": sorted(conditions)}
@@ -125,9 +132,28 @@ def pool(tasks: Sequence[Task], runs: Iterable[Mapping], gold_ids: set[str]) -> 
     ]
 
 
-def validation_sample(pairs: Sequence[dict], seed: int, n: int = VALIDATION_SAMPLE) -> list[dict]:
+def validation_sample(
+    pairs: Sequence[dict],
+    seed: int,
+    judged: Sequence[Mapping] = (),
+    n: int = VALIDATION_SAMPLE,
+    answered: int = MIN_ANSWERED,
+) -> list[dict]:
+    """The first n pairs in a seeded order, grown one pair at a time in the same order while the
+    judge has answered fewer than `answered` of them. An unsure verdict is not an answer, so it
+    cannot count toward the agreement the judge is trusted on. The sample grows only once every
+    pair in it is judged, so each new pair is judged before the next is added."""
     ordered = sorted(pairs, key=lambda p: seeded_hash(seed, f"judge|{p['task']}|{p['asin']}"))
-    return ordered[:n]
+    verdicts = {_key(j): j["verdict"] for j in judged if j.get("by") == "judge"}
+    size = min(n, len(ordered))
+    while size < len(ordered):
+        sample = ordered[:size]
+        if any(_key(p) not in verdicts for p in sample):
+            break
+        if sum(verdicts[_key(p)] != UNSURE for p in sample) >= answered:
+            break
+        size += 1
+    return ordered[:size]
 
 
 def _key(pair: Mapping) -> tuple[str, str]:
@@ -212,15 +238,22 @@ def hand_review(
     The judge's answer is not shown, so the hand judgment stays independent of it.
     """
     new = []
+    seen = set(done)
     for pair in pairs:
-        if _key(pair) in done:
+        if _key(pair) in seen:
             continue
+        seen.add(_key(pair))
         task, product = tasks[pair["task"]], products[pair["asin"]]
         write(f"\n{task.id}: {task.request}")
         for constraint in task.constraints:
             write(f"  must: {describe(constraint)}")
         write(f"  product: {product['title'][:120]}")
         write(f"  price: {product.get('price')}")
+        # What the judge reads, so the two judgments rest on the same evidence.
+        for feature in list(product.get("features") or [])[:5]:
+            write(f"  - {str(feature)[:160]}")
+        if product.get("description"):
+            write(f"  description: {str(product['description'])[:300]}")
         for name, value in sorted(product.get("details", {}).items())[:12]:
             write(f"  {name}: {str(value)[:80]}")
         if product.get("image_url"):
@@ -229,7 +262,15 @@ def hand_review(
         if answer == "q":
             break
         if answer in ("y", "n"):
-            new.append({**pair, "verdict": MEETS if answer == "y" else FAILS, "by": "hand"})
+            new.append(
+                {
+                    "task": pair["task"],
+                    "asin": pair["asin"],
+                    "conditions": list(pair.get("conditions", [])),
+                    "verdict": MEETS if answer == "y" else FAILS,
+                    "by": "hand",
+                }
+            )
     return new
 
 

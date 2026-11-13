@@ -224,8 +224,17 @@ def test_check_summarizes_a_valid_set(taxonomy):
 
 
 def test_check_requires_enough_tasks(taxonomy):
-    with pytest.raises(TaskError, match="need 100 tasks, have 1"):
+    with pytest.raises(TaskError, match="need 100 hand-checked tasks, have 1"):
         check_tasks([task()], items(), taxonomy, set())
+
+
+def test_check_runs_only_hand_checked_tasks_and_lists_the_rest(taxonomy):
+    unverified = Task("task-0002", [CAT_BAGS, CHEAP], ["G9"], "A cheap bag", False)
+    report = check_tasks([task(), unverified], items(), taxonomy, set(), need=1)
+    assert report["tasks"] == 1
+    assert report["left_unchecked"] == ["task-0002"]
+    with pytest.raises(TaskError, match="need 2 hand-checked tasks, have 1"):
+        check_tasks([task(), unverified], items(), taxonomy, set(), need=2)
 
 
 def test_check_rejects_repeated_ids_and_requests(taxonomy):

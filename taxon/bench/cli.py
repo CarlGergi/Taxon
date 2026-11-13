@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 from taxon.bench import agent, drafting, judging, score, search
@@ -72,7 +73,7 @@ def _enrichment_costs(taxon_run: str | None) -> dict:
     return costs
 
 
-def _score(args, tasks, items, derived: Path) -> int:
+def _score(args, tasks, items, derived: Path, products: Mapping | None = None) -> int:
     space = judging.Judging(judging.JUDGING_DIR, DATA_DIR / "labeling")
     rows = agent.RunLog(agent.agent_dir(False)).rows()
     try:
@@ -86,10 +87,14 @@ def _score(args, tasks, items, derived: Path) -> int:
             SEED,
             {item.asin for item in items},
             set(_benchmark_ids(derived)),
+            titles={asin: p["title"] for asin, p in products.items()} if products else None,
         )
     except score.NotReady as waiting:
         print(f"NOT READY: {waiting}")
         return 1
+    if products is not None:
+        gold_ids = {item.asin for item in items}
+        report["judge"] = judging.validation_report(space, tasks, products, gold_ids, rows)
     score.write_report(report)
     print(json.dumps(report, indent=2))
     return 0
@@ -136,6 +141,7 @@ def main(
     shop.add_argument("--runs", type=int, default=3)
     shop.add_argument("--tasks", type=int, default=FIRST_TASK_COUNT, help="the first N tasks")
     shop.add_argument("--fake", action="store_true", help="a scripted model, spending nothing")
+    shop.add_argument("--limit", type=float, help="stop before this call spends more dollars")
     price = commands.add_parser("shop-price", help="price the agent runs, spending nothing")
     price.add_argument("--runs", type=int, default=3)
     scoring = commands.add_parser("score", help="score the agent runs on every catalog")
@@ -148,6 +154,14 @@ def main(
         judge = commands.add_parser(name, help=text)
         judge.add_argument("--runs", type=Path, help="JSONL of condition, run, task, returned")
         judge.add_argument("--fake", action="store_true")
+        judge.add_argument(
+            "--direct",
+            action="store_true",
+            help="send judge calls one by one at full price, for when a batch stalls",
+        )
+        judge.add_argument(
+            "--limit", type=float, help="the most this command may spend, in dollars"
+        )
     args = parser.parse_args(argv)
 
     if args.command == "search-index":
@@ -192,15 +206,19 @@ def main(
             args.fake,
             read,
             print,
+            direct=args.direct,
+            limit=args.limit,
         )
         print(json.dumps(report, indent=2))
         return 0
     if args.command == "score":
-        return _score(args, existing, items, derived)
+        return _score(args, existing, items, derived, by_asin)
     if args.command == "shop":
         tasks = agent.runnable(existing)[: args.tasks]
         index = search.index_dir(args.condition, derived)
-        report = agent.shop_condition(args.condition, tasks, args.runs, index, args.fake)
+        report = agent.shop_condition(
+            args.condition, tasks, args.runs, index, args.fake, args.limit
+        )
         print(json.dumps(report, indent=2))
         return 0
     if args.command == "draft":

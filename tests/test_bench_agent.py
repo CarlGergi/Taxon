@@ -405,6 +405,16 @@ def test_a_fake_condition_runs_end_to_end_on_the_real_engine(raw_index, tmp_path
     assert all(r["returned"][0] == "C" for r in rows)
 
 
+def test_a_limited_condition_stops_cleanly_before_its_limit(raw_index, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "agent_dir", lambda fake: tmp_path / ("fake" if fake else "real"))
+    tasks = [task("t1", "chef knife")]
+    report = agent.shop_condition("raw", tasks, 2, raw_index, fake=True, limit=0.0)
+    assert report["new_runs"] == 0
+    assert report["stop_at"] == report["anthropic_spent"]
+    report = agent.shop_condition("raw", tasks, 2, raw_index, fake=True, limit=1.0)
+    assert report["new_runs"] == 2
+
+
 def test_pricing_the_agent_reads_the_real_engine_and_spends_nothing(
     raw_index, tmp_path, monkeypatch
 ):

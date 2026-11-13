@@ -249,12 +249,17 @@ def check_tasks(
     training_ids: Collection[str],
     need: int = FIRST_TASK_COUNT,
 ) -> dict:
-    """Validate a whole task set and summarize it."""
+    """Validate the hand-checked tasks, the ones the benchmark runs, and summarize them.
+
+    Tasks a reviewer left unchecked are listed, not run: their candidates could not be verified.
+    """
     ids = [t.id for t in tasks]
     if len(set(ids)) != len(ids):
         raise TaskError("task ids are not unique")
+    unchecked = [t.id for t in tasks if not t.checked]
+    tasks = [t for t in tasks if t.checked]
     if len(tasks) < need:
-        raise TaskError(f"need {need} tasks, have {len(tasks)}")
+        raise TaskError(f"need {need} hand-checked tasks, have {len(tasks)}")
     requests = [t.request for t in tasks]
     if len(set(requests)) != len(requests):
         raise TaskError("two tasks share a request")
@@ -262,6 +267,7 @@ def check_tasks(
         validate_task(task, items, taxonomy, training_ids)
     return {
         "tasks": len(tasks),
+        "left_unchecked": unchecked,
         "constraints": {
             str(n): sum(len(t.constraints) == n for t in tasks)
             for n in range(MIN_CONSTRAINTS, MAX_CONSTRAINTS + 1)
