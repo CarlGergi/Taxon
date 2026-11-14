@@ -8,7 +8,7 @@ BACKUP_DIR ?= $(HOME)/Library/Mobile Documents/com~apple~CloudDocs/taxon-backups
 CATALOG ?= raw
 CONDITION ?= raw
 RUNS ?= 3
-QUANT_RUN ?= data/rl/qwen-lora-grpo
+QUANT_RUN ?= data/training/qwen-lora-shortlist
 LADDER_RUN ?= data/training/qwen-lora
 # gold: the hand-labeled products; train: 50 of the run's own training products.
 LADDER_ON ?= gold

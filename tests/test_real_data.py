@@ -419,6 +419,46 @@ def test_the_readme_reports_the_benchmark():
     assert not missing, f"README is out of date: {missing}"
 
 
+def test_the_readme_reports_the_quantization_study():
+    path = RESULTS_DIR / "quantization.json"
+    if not path.exists():
+        pytest.skip("the quantization study has not been run")
+    report = json.loads(path.read_text(encoding="utf-8"))
+    documents = _documents()
+    names = {"bf16": "16-bit", "int8": "8-bit", "int4": "4-bit"}
+
+    def share(v, b):
+        return f"{v * 100:.1f}% [{b[0] * 100:.1f}, {b[1] * 100:.1f}]"
+
+    def rate(v, b):
+        return f"{v:,.0f} [{b[0]:,.0f}, {b[1]:,.0f}]"
+
+    def seconds(v, b):
+        return f"{v:.2f} s [{b[0]:.2f}, {b[1]:.2f}]"
+
+    expected = []
+    for key, name in names.items():
+        p = report["precisions"][key]
+        accuracy, top = p["accuracy"], p["accuracy"]["levels"][0]
+        minus = report["accuracy_minus_bf16"].get(key)
+        diff = ""
+        if minus:
+            low, high = (bound * 100 for bound in minus["ci95"])
+            diff = f"{minus['difference'] * 100:.1f} [{low:.1f}, {high:.1f}]"
+        exact = share(accuracy["exact_leaf_accuracy"], accuracy["exact_leaf_accuracy_ci95"])
+        per_hour = rate(p["products_per_hour"], p["products_per_hour_ci95"])
+        expected.append(f"| {name} | {exact} | {diff} | {per_hour} | {p['size_gb']:.1f} GB |")
+        expected.append(
+            f"| {name} | {exact} | {share(top['micro_recall'], top['micro_recall_ci95'])} | "
+            f"{diff} | "
+            f"{seconds(p['latency_p50_s'], p['latency_p50_s_ci95'])} | "
+            f"{seconds(p['latency_p95_s'], p['latency_p95_s_ci95'])} | {per_hour} | "
+            f"{p['size_gb']:.1f} GB | {p['peak_memory_gb']:.1f} GB |"
+        )
+    missing = [line for line in expected if line not in documents]
+    assert not missing, f"README is out of date: {missing}"
+
+
 def test_the_readme_reports_attribute_support():
     path = RESULTS_DIR / "attribute_support.json"
     if not path.exists():

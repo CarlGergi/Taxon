@@ -61,7 +61,7 @@ flowchart LR
 | Training labels | `claude-haiku-5-5` and `gpt-6-luna` annotators, `claude-sonnet-5-5` arbitrator | Two vendors err differently; the arbitrator is paid only on disagreement |
 | Model | Qwen3.5-2B with LoRA (PyTorch, Transformers, PEFT) | Small enough to fine-tune and run on one laptop |
 | Decoding | Token trie over taxonomy paths | Every answer is a real path or "none" |
-| Reinforcement learning | GRPO (TRL) | Rewards computed from the taxonomy, with no reward model; built and tested, see Limitations |
+| Reinforcement learning | GRPO (TRL) | Rewards computed from the taxonomy, with no reward model; it did not help here, see Limitations |
 | Search | Rust and tantivy, served over MCP | One tool schema for every catalog, so the data is the only difference |
 | Agent | `claude-haiku-5-5` | Cheap enough for three rounds of every task on every catalog |
 | Judge | `gpt-6-luna` | Not Claude, so it cannot share the arbitrator's or the agent's leanings |
@@ -150,11 +150,28 @@ of 238 pooled pairs it was unsure of were judged by hand.
 | Training labels (two annotators and an arbitrator) | 52.0% [38.5, 65.2] | 94.0% [83.8, 97.9] | |
 | Fine-tuned to write the path, constrained to real paths | 20.0% [11.2, 33.0] | 90.0% [78.6, 95.7] | -32.0 [-50.0, -14.0] |
 | Fine-tuned to pick from a 50-path shortlist (Taxon) | 48.0% [34.8, 61.5] | 88.0% [76.2, 94.4] | -4.0 [-14.0, 6.0] |
+| The same, then 200 steps of GRPO | 48.0% [34.8, 61.5] | 86.0% [73.8, 93.0] | -4.0 [-14.0, 6.0] |
 
 Picking from a shortlist matches the training labels with one local model call, where the labels
 took two paid annotators and an arbitrator; writing a path from all 64,292 categories does not.
 **The shortlist caps it at 76%**: the exact hand label is among the 50 candidates for 38 of the 50
 products.
+GRPO on top changed nothing measurable: it gets the same 24 products right.
+
+### Quantization
+
+The shortlist model with MLX on one M5 Max, asked for the category alone of the 50 hand-labeled
+products.
+
+| Precision | Exact category | Minus 16-bit | Products per hour | Size |
+| --- | --- | --- | --- | --- |
+| 16-bit | 48.0% [34.8, 61.5] |  | 6,896 [6,490, 7,364] | 4.4 GB |
+| 8-bit | 48.0% [34.8, 61.5] | 0.0 [0.0, 0.0] | 8,494 [7,995, 9,046] | 2.7 GB |
+| 4-bit | 46.0% [33.0, 59.6] | -2.0 [-12.0, 6.0] | 10,177 [9,399, 10,961] | 1.7 GB |
+
+8-bit gets exactly the same products right as 16-bit, 1.2 times faster in 60% of the space. 4-bit
+is 1.5 times faster in 39% of the space and 2.0 points lower, which does not resolve. FP8 needs an
+NVIDIA GPU and was not measured. Details, latencies and memory: [docs/DETAILS.md](docs/DETAILS.md#quantization-results).
 
 ### How the hand labels were made
 
@@ -187,13 +204,13 @@ category path and a keyword baseline's top 5 guesses, but never the annotators' 
   tasks the difference between Taxon's catalog and the raw one spans -2.5 to 11.8 points.
 - **Small hand-labeled sets.** 50 products give intervals of about 13 points either side at 70%
   accuracy. 8 of the 100 drafted tasks were left unchecked and never run.
-- **GRPO and quantization were not run on the final model.** Both are built and tested; the short
-  GRPO run stopped before its first checkpoint when it competed for the GPU, and FP8 needs an
-  NVIDIA GPU.
+- **GRPO did not help.** 200 steps on the shortlist model changed no measured answer. Its loss
+  stayed near zero, most likely because sampled picks from a shortlist nearly always agree, which
+  leaves nothing to learn from; and in 36 GB of memory the run swapped and took 17 hours.
 
 ## How it's tested
 
-`make reproduce` runs 911 Python tests, 41 of them on the real data and results, and 30 Rust
+`make reproduce` runs 912 Python tests, 42 of them on the real data and results, and 30 Rust
 tests of the search engine. Paid APIs are replaced by fakes in tests, and the real-data tests check
 that every number in this README and in [docs/DETAILS.md](docs/DETAILS.md) matches `results/`.
 CI runs the lint and the other 870 Python tests and the Rust tests on every push, on Ubuntu, with

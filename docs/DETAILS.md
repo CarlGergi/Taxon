@@ -324,7 +324,7 @@ report gives accuracy per taxonomy level, p50 and p95 latency, throughput, size,
 the local hours a million products would take. FP8 needs an NVIDIA GPU and is not measured.
 
 ```bash
-make quant-prepare QUANT_RUN=data/rl/qwen-lora-grpo
+make quant-prepare QUANT_RUN=data/training/qwen-lora-shortlist
 make quant
 ```
 
@@ -400,6 +400,8 @@ once free and once constrained to real taxonomy paths by the token trie (`make l
 | Fine-tuned | constrained | 20.0% [11.2, 33.0] | 90.0% [78.6, 95.7] | 0.0% [0.0, 7.1] | -32.0 [-50.0, -14.0] |
 | Fine-tuned on a shortlist | free | 48.0% [34.8, 61.5] | 88.0% [76.2, 94.4] | 0.0% [0.0, 7.4] | -4.0 [-14.0, 6.0] |
 | Fine-tuned on a shortlist | constrained | 48.0% [34.8, 61.5] | 88.0% [76.2, 94.4] | 0.0% [0.0, 7.4] | -4.0 [-14.0, 6.0] |
+| Fine-tuned on a shortlist, then GRPO | free | 48.0% [34.8, 61.5] | 86.0% [73.8, 93.0] | 0.0% [0.0, 7.7] | -4.0 [-14.0, 6.0] |
+| Fine-tuned on a shortlist, then GRPO | constrained | 48.0% [34.8, 61.5] | 86.0% [73.8, 93.0] | 0.0% [0.0, 7.7] | -4.0 [-14.0, 6.0] |
 
 **Fine-tuning on the open taxonomy does not beat its labels; fine-tuning on a shortlist matches
 them.** The first model is asked to write a path from all 64,292 categories and is 32 points worse
@@ -416,6 +418,13 @@ so no pick can do better. Its 26 misses are 9 too deep, 6 too shallow, 9 on anot
 them in another department), and 2 "none".
 Free and constrained decoding agree because both pick from the list.
 
+**GRPO on top of the shortlist model changed nothing measurable.** After 200 steps it gets the same
+24 of the 50 products right, a difference of 0.0 [0.0, 0.0] from the model it started from, and
+answers "none" for 4 products instead of 2. Its logged loss stayed near zero throughout, most
+likely because the four sampled picks per product nearly always agreed, which leaves no
+group-relative advantage to learn from. The run took 17 hours on this Mac, because it did not fit in
+36 GB of memory and swapped, at up to about 5 minutes a step.
+
 Why the first model fell short: asked about 50 of its own training products, it reproduces their
 labels only 28% of the time, so it had not learned them, not merely failed to generalize. Each
 product's category was a training target about once and a half in 2,000 steps. The shortlist turns
@@ -427,6 +436,8 @@ the task into a choice among 50, which it learns in the same budget:
 | Fine-tuned | constrained | 28.0% [17.5, 41.7] | 88.0% [76.2, 94.4] |
 | Fine-tuned on a shortlist | free | 92.0% [81.2, 96.8] | 94.0% [83.8, 97.9] |
 | Fine-tuned on a shortlist | constrained | 92.0% [81.2, 96.8] | 94.0% [83.8, 97.9] |
+| Fine-tuned on a shortlist, then GRPO | free | 92.0% [81.2, 96.8] | 94.0% [83.8, 97.9] |
+| Fine-tuned on a shortlist, then GRPO | constrained | 92.0% [81.2, 96.8] | 94.0% [83.8, 97.9] |
 
 The keyword baseline on the same products: 8.0% [3.2, 18.8] exact when trained on the silver
 labels, 12.0% [5.6, 23.8] when trained on the pipeline labels. The paired difference, +4.0 points
@@ -492,6 +503,22 @@ the engine and catalog work together, not how well an agent shops.
 | Products searched | Found first | Found in top 10 |
 | --- | --- | --- |
 | 500 | 99.6% | 99.8% |
+
+### Quantization results
+
+The shortlist model, merged and converted with MLX, asked for the category alone of the 50
+hand-labeled products: greedy, picked from its 50 candidates through the trie, one at a time after
+one untimed warm-up reply, on one M5 Max. Intervals resample the 50 replies; the difference from
+16-bit is paired over products. FP8 needs an NVIDIA GPU and was not measured.
+
+| Precision | Exact category | Top level | Minus 16-bit | p50 latency | p95 latency | Products per hour | Size | Peak memory |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 16-bit | 48.0% [34.8, 61.5] | 86.0% [73.8, 93.0] |  | 0.51 s [0.48, 0.56] | 0.73 s [0.65, 0.82] | 6,896 [6,490, 7,364] | 4.4 GB | 5.7 GB |
+| 8-bit | 48.0% [34.8, 61.5] | 88.0% [76.2, 94.4] | 0.0 [0.0, 0.0] | 0.42 s [0.37, 0.44] | 0.59 s [0.53, 0.69] | 8,494 [7,995, 9,046] | 2.7 GB | 4.0 GB |
+| 4-bit | 46.0% [33.0, 59.6] | 90.0% [78.6, 95.7] | -2.0 [-12.0, 6.0] | 0.34 s [0.31, 0.38] | 0.56 s [0.45, 0.65] | 10,177 [9,399, 10,961] | 1.7 GB | 3.2 GB |
+
+These replies give the category alone. The benchmark's enrichment also asks for attributes, in
+PyTorch, at 4.5 seconds a product.
 
 ## Unsupported attribute values
 
