@@ -1,6 +1,45 @@
+import ipaddress
+import socket
+
 import pytest
 
 from taxon.taxonomy import SEPARATOR, Taxonomy
+
+OFFLINE = (
+    "tests run offline; mark a test that needs the network or real data with @pytest.mark.data"
+)
+
+
+def _local(host) -> bool:
+    if host in (None, "", "localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(str(host).split("%")[0]).is_loopback
+    except ValueError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _no_network(request, monkeypatch):
+    """Only tests marked `data` may reach beyond this machine; any other connection fails."""
+    if request.node.get_closest_marker("data"):
+        return
+    connect, lookup = socket.socket.connect, socket.getaddrinfo
+
+    def guarded_connect(sock, address):
+        host = address[0] if isinstance(address, tuple) else None
+        if sock.family == getattr(socket, "AF_UNIX", None) or _local(host):
+            return connect(sock, address)
+        raise OSError(f"{OFFLINE} (tried {address!r})")
+
+    def guarded_lookup(host, *args, **kwargs):
+        if _local(host):
+            return lookup(host, *args, **kwargs)
+        raise OSError(f"{OFFLINE} (tried to look up {host!r})")
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket, "getaddrinfo", guarded_lookup)
+
 
 COLOR = "gid://shopify/TaxonomyAttribute/1"
 MATERIAL = "gid://shopify/TaxonomyAttribute/2"

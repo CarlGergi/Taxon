@@ -3,7 +3,7 @@
 A small local model that files products into Shopify's taxonomy, and a benchmark that asks whether
 shopping agents do better for it.
 
-![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB) ![Rust](https://img.shields.io/badge/Rust-tantivy-B7410E) ![PyTorch](https://img.shields.io/badge/PyTorch-LoRA-EE4C2C) ![TRL](https://img.shields.io/badge/TRL-GRPO-FFD21E) ![MCP](https://img.shields.io/badge/MCP-search%20tool-555555) ![License: MIT](https://img.shields.io/badge/License-MIT-2E7D32)
+[![CI](https://github.com/CarlGergi/Taxon/actions/workflows/ci.yml/badge.svg)](https://github.com/CarlGergi/Taxon/actions/workflows/ci.yml) ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB) ![Rust](https://img.shields.io/badge/Rust-tantivy-B7410E) ![PyTorch](https://img.shields.io/badge/PyTorch-LoRA-EE4C2C) ![TRL](https://img.shields.io/badge/TRL-GRPO-FFD21E) ![MCP](https://img.shields.io/badge/MCP-search%20tool-555555) ![License: MIT](https://img.shields.io/badge/License-MIT-2E7D32)
 
 ![Bar chart of CatalogBench task success by catalog: raw catalog 90.2%, enriched by Sonnet 89.5%, enriched by Taxon 93.8%, each with a 95% interval and one dot per round; the intervals overlap.](docs/images/task-success.png)
 
@@ -193,9 +193,12 @@ category path and a keyword baseline's top 5 guesses, but never the annotators' 
 
 ## How it's tested
 
-`make reproduce` runs 909 Python tests, 41 of them on the real data and results, and 30 Rust
+`make reproduce` runs 911 Python tests, 41 of them on the real data and results, and 30 Rust
 tests of the search engine. Paid APIs are replaced by fakes in tests, and the real-data tests check
 that every number in this README and in [docs/DETAILS.md](docs/DETAILS.md) matches `results/`.
+CI runs the lint and the other 870 Python tests and the Rust tests on every push, on Ubuntu, with
+no keys. Tests cannot reach the network unless they are marked as needing real data, and those
+stay out of CI.
 
 ## License
 
