@@ -19,6 +19,25 @@ def _local(host) -> bool:
         return False
 
 
+def _bf16_gpu() -> bool:
+    import torch
+
+    if torch.backends.mps.is_available():
+        return True
+    return torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+
+
+def pytest_collection_modifyitems(config, items):
+    """Tests marked `gpu` build GPU training settings, which transformers refuses without a GPU
+    that supports bf16; on any other machine, such as CI's, they are skipped and say why."""
+    gpu_tests = [item for item in items if item.get_closest_marker("gpu")]
+    if not gpu_tests or _bf16_gpu():
+        return
+    skip = pytest.mark.skip(reason="needs a GPU that trains in bf16")
+    for item in gpu_tests:
+        item.add_marker(skip)
+
+
 @pytest.fixture(autouse=True)
 def _no_network(request, monkeypatch):
     """Only tests marked `data` may reach beyond this machine; any other connection fails."""

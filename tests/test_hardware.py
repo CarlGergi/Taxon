@@ -48,6 +48,7 @@ def test_labeling_results_record_the_hardware(tmp_path):
     assert "hardware" in json.loads((tmp_path / "r.json").read_text())
 
 
+@pytest.mark.gpu
 def test_apple_s_gpu_trains_in_bf16_without_pinned_memory(tmp_path):
     arguments = training_arguments(TrainSettings(gpu=True), tmp_path, "mps")
     assert (arguments.use_cpu, arguments.bf16, arguments.dataloader_pin_memory) == (
@@ -57,6 +58,7 @@ def test_apple_s_gpu_trains_in_bf16_without_pinned_memory(tmp_path):
     )
 
 
+@pytest.mark.gpu
 def test_grpo_uses_vllm_only_on_nvidia(tmp_path):
     weights = RewardWeights()
     assert grpo_arguments(GrpoSettings(gpu=True), tmp_path, weights, "cuda").use_vllm is True

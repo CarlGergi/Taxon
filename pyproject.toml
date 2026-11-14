@@ -49,7 +49,10 @@ packages = ["taxon", "eval"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-m 'not data'"
-markers = ["data: needs the pinned downloads produced by make reproduce"]
+markers = [
+    "data: needs the pinned downloads produced by make reproduce",
+    "gpu: needs a GPU that trains in bf16 (Apple silicon, or an NVIDIA card from Ampere on)",
+]
 
 [tool.ruff]
 line-length = 100

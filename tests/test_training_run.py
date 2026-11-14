@@ -179,6 +179,7 @@ def test_development_runs_on_cpu_by_default(tmp_path):
     assert arguments.gradient_checkpointing is False
 
 
+@pytest.mark.gpu
 def test_the_gpu_flag_turns_on_the_gpu_settings(tmp_path):
     arguments = training_arguments(TrainSettings(gpu=True), tmp_path)
     assert arguments.use_cpu is False

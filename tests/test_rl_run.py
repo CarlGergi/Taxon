@@ -229,6 +229,7 @@ def test_the_depth_plot_is_written_even_with_gaps(tmp_path):
     assert (tmp_path / "depth.png").read_bytes()[:4] == b"\x89PNG"
 
 
+@pytest.mark.gpu
 def test_development_runs_on_cpu_and_the_gpu_flag_turns_on_vllm(tmp_path):
     cpu = grpo_arguments(GrpoSettings(), tmp_path, RewardWeights())
     assert (cpu.use_cpu, cpu.use_vllm, cpu.bf16) == (True, False, False)
